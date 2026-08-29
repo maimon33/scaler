@@ -1,0 +1,10 @@
+services:
+  scaler-ui:
+    build: .
+    ports:
+      - '3000:3000'
+    environment:
+      KUBE_PROXY_URL: http://host.docker.internal:8001
+      AWS_CREDENTIAL_MODE: node
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
