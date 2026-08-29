@@ -2,6 +2,30 @@
 
 A deliberately narrow Kubernetes scaling control plane for teams that need safe manual changes, schedules, and a first-class AWS SQS policy without adopting a general-purpose event-driven autoscaling platform.
 
+## Quick install
+
+From the repository root, choose one installer. Each one-liner creates random database and event API credentials with `openssl` and installs into the `scaler` namespace.
+
+**Helm**
+
+```bash
+helm upgrade --install scaler ./deploy/helm/scaler --namespace scaler --create-namespace --set-string secrets.databasePassword="$(openssl rand -hex 24)" --set-string secrets.eventsToken="$(openssl rand -hex 32)"
+```
+
+**kubectl**
+
+```bash
+sed -e "s/DATABASE_PASSWORD: \"CHANGE_ME\"/DATABASE_PASSWORD: \"$(openssl rand -hex 24)\"/" -e "s/SCALER_EVENTS_TOKEN: \"CHANGE_ME\"/SCALER_EVENTS_TOKEN: \"$(openssl rand -hex 32)\"/" deploy/scaler.yaml | kubectl apply -f -
+```
+
+**Kustomize**
+
+```bash
+kustomize build deploy | sed -e "s/DATABASE_PASSWORD: \"CHANGE_ME\"/DATABASE_PASSWORD: \"$(openssl rand -hex 24)\"/" -e "s/SCALER_EVENTS_TOKEN: \"CHANGE_ME\"/SCALER_EVENTS_TOKEN: \"$(openssl rand -hex 32)\"/" | kubectl apply -f -
+```
+
+These defaults use the EKS EBS CSI `gp3` storage class and the `ghcr.io/maimon33/scaler:latest` image. For production, use a private Helm values file or external secret manager, pin an image tag, configure IRSA or EKS Pod Identity, and set `secrets.slackWebhookUrl` if Slack alerts are required.
+
 ## Product premise: simpler on purpose
 
 Scaler is not intended to reproduce KEDA or become a universal metrics adapter. Its premise is that a focused controller can be easier to understand and operate when the supported problem is intentionally small.

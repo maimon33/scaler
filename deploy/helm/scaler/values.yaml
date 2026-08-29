@@ -1,0 +1,11 @@
+image:
+  repository: ghcr.io/maimon33/scaler
+  tag: latest
+
+secrets:
+  # Both values are required. Supply them with --set-string or a private values file.
+  databasePassword: ""
+  eventsToken: ""
+  # Optional incoming Slack webhook. Critical logs remain enabled when empty.
+  slackWebhookUrl: ""
+
