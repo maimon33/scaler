@@ -17,6 +17,40 @@ The design follows these rules:
 
 ## Product features
 
+### Define a scaler three ways
+
+Scaler definitions are not intended to be GUI-only. The authoring workspace exposes the same policy in three forms:
+
+- **Guided:** structured boxes for the definition, workload, signal, and safety limits;
+- **Flow / Composer:** a left-to-right view of signal, demand calculation, and scale action;
+- **YAML:** the declarative `scaler.io/v1alpha1` contract for GitOps and CI workflows.
+
+Each definition can reserve optional headroom above calculated demand, expressed as a percentage or a fixed replica count. Headroom is applied before the configured maximum replica limit.
+
+Example percentage-based headroom:
+
+```yaml
+apiVersion: scaler.io/v1alpha1
+kind: Scaler
+metadata:
+  name: events-worker-sqs
+  namespace: production
+spec:
+  targetRef:
+    kind: Deployment
+    name: events-worker
+  replicas:
+    min: 2
+    max: 80
+    headroom:
+      type: percent
+      value: 20
+```
+
+For fixed capacity, use `type: replicas`. The controller first calculates source demand, adds the configured headroom, and finally clamps the result to the `min`/`max` range. Headroom belongs to each Scaler definition and does not change any other workload policy.
+
+The current application demonstrates this contract in the interactive mock. Controller-side parsing and reconciliation remain part of the API/controller implementation described below.
+
 ### Initial scope
 
 - discover Deployments, StatefulSets, native HPAs, and their current owner;
@@ -109,7 +143,7 @@ PostgreSQL is used instead of SQLite because it safely supports a future move to
 Before applying the manifest:
 
 1. Build and publish the application image as `ghcr.io/maimon33/scaler:latest`, or change the image reference in the manifest.
-2. Replace `CHANGE_ME` in the `scaler-secrets` Secret with a strong password. For production, use External Secrets or your cluster's secret manager instead of committing the real value.
+2. Replace both `CHANGE_ME` values in `scaler-secrets`: use a strong database password and a separate long random event API token. For production, use External Secrets or your cluster's secret manager instead of committing real values.
 3. On EKS, install the EBS CSI driver. On another Kubernetes platform, change `scaler-gp3` to an available storage class and remove the included AWS storage class.
 4. If using OIDC/IRSA, uncomment the service-account role annotation and replace its example ARN.
 
@@ -138,7 +172,7 @@ kubectl -n scaler port-forward service/scaler 3000:80
 
 Then visit <http://localhost:3000>.
 
-The current interface is still a mock frontend. This deployment creates and persists the production history schema and passes the database connection settings to the application. The next implementation step is the focused controller/API described above: native scale operations, ownership detection, schedules, and one SQS policy. It should not expose kube-proxy to the browser in production; the server should use its in-cluster service-account identity.
+The current interface still uses representative frontend data. The deployment now includes a real internal event API that persists operation results, classifies critical scaling issues, produces structured logs, and sends Slack alerts. The native Kubernetes scale executor, ownership detection, schedules, and SQS policy remain the next controller steps. They should report every result to the event API and use the in-cluster service-account identity; kube-proxy must not be exposed to the browser in production.
 
 The schema ConfigMap initializes a new database volume only. Future schema changes should be delivered as numbered migrations rather than editing an already-initialized database in place.
 
@@ -147,3 +181,58 @@ The schema ConfigMap initializes a new database volume only. Future schema chang
 Each schedule or scaling policy chooses an event-retention period. That value is copied to every operation created by the job, so changing a job affects new operations without silently rewriting the retention contract of previous attempts. The GUI shows the period on every operation and allows pending jobs to be edited.
 
 `operation_events` rows older than their parent operation's `retention_days` value are permanently deleted by the `scaler-retention` CronJob each night. The operation summary itself is retained for auditability. Existing databases must apply [`deploy/migrations/002-operation-event-retention.sql`](deploy/migrations/002-operation-event-retention.sql); editing the initialization ConfigMap alone does not migrate an existing volume.
+
+## Critical logs and Slack notifications
+
+The `events` sidecar listens internally on port `3001`. It records every reported scale operation and marks these conditions critical:
+
+- scale-up or scale-down failed;
+- scale-up or scale-down timed out;
+- a completed operation exceeded `CRITICAL_SCALE_DURATION_SECONDS`;
+- Kubernetes reported success but the actual replica count missed the desired target.
+
+Critical Kubernetes log lines are JSON and always include the customizable `marker`, `emphasis`, and `reasons` fields. For example:
+
+```json
+{"level":"critical","event":"CRITICAL_SCALE_OPERATION","marker":"SCALER_CRITICAL","emphasis":"!!! CRITICAL SCALING ISSUE !!!","workload":"events-worker","direction":"up","status":"failed","reasons":["SCALE_UP_FAILED"]}
+```
+
+Configure the policy in `scaler-config`:
+
+- `CRITICAL_SCALE_DURATION_SECONDS`: duration after which a completed scale is critical;
+- `SLACK_NOTIFICATION_COOLDOWN_SECONDS`: suppress repeated Slack alerts for the same workload during this period;
+- `CRITICAL_LOG_MARKER` and `CRITICAL_LOG_EMPHASIS`: text added to every critical log record.
+
+Configure `SLACK_WEBHOOK_URL` in `scaler-secrets` with an incoming Slack webhook. An empty value disables Slack delivery while keeping critical logging and database history enabled. Set `SCALER_EVENTS_TOKEN` to a long random value; all event API calls except `/health` require it as a Bearer token.
+
+Report a completed operation:
+
+```bash
+kubectl -n scaler port-forward service/scaler 3001:3001
+
+curl -X POST http://localhost:3001/v1/operations \
+  -H "Authorization: Bearer $SCALER_EVENTS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "cluster_name": "eks-prod-01",
+    "namespace": "production",
+    "workload_kind": "Deployment",
+    "workload_name": "events-worker",
+    "source": "sqs-policy",
+    "previous_replicas": 18,
+    "desired_replicas": 24,
+    "actual_replicas": 18,
+    "status": "failed",
+    "duration_ms": 10342,
+    "error_message": "deployment scale subresource did not converge"
+  }'
+```
+
+Test the Slack webhook after deployment:
+
+```bash
+curl -X POST http://localhost:3001/v1/notifications/slack/test \
+  -H "Authorization: Bearer $SCALER_EVENTS_TOKEN"
+```
+
+Slack failures never block operation recording. The delivery result is stored as `sent`, `suppressed`, `disabled`, or `failed`, and deduplication uses persisted history so it survives Pod restarts. Existing databases must also apply [`deploy/migrations/003-critical-notifications.sql`](deploy/migrations/003-critical-notifications.sql).
