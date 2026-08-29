@@ -1,5 +1,5 @@
 image:
-  repository: ghcr.io/maimon33/scaler
+  repository: 236565801201.dkr.ecr.eu-central-1.amazonaws.com/scaler
   tag: latest
 
 secrets:
@@ -8,4 +8,3 @@ secrets:
   eventsToken: ""
   # Optional incoming Slack webhook. Critical logs remain enabled when empty.
   slackWebhookUrl: ""
-

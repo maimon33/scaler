@@ -1,7 +1,7 @@
 # Scaler Kubernetes deployment
 #
 # Before applying:
-#   1. Build and publish ghcr.io/maimon33/scaler:latest.
+#   1. Build and publish 236565801201.dkr.ecr.eu-central-1.amazonaws.com/scaler:latest.
 #   2. Replace both CHANGE_ME values in the scaler-secrets Secret.
 #   3. On EKS, install the EBS CSI driver or replace scaler-gp3 with an
 #      existing StorageClass.
@@ -437,7 +437,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: scaler
-          image: ghcr.io/maimon33/scaler:latest
+          image: 236565801201.dkr.ecr.eu-central-1.amazonaws.com/scaler:latest
           imagePullPolicy: Always
           ports:
             - name: http
@@ -476,7 +476,7 @@ spec:
             capabilities:
               drop: ["ALL"]
         - name: events
-          image: ghcr.io/maimon33/scaler:latest
+          image: 236565801201.dkr.ecr.eu-central-1.amazonaws.com/scaler:latest
           imagePullPolicy: Always
           command: ["node", "controller/server.mjs"]
           ports:

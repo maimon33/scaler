@@ -24,7 +24,7 @@ sed -e "s/DATABASE_PASSWORD: \"CHANGE_ME\"/DATABASE_PASSWORD: \"$(openssl rand -
 kustomize build deploy | sed -e "s/DATABASE_PASSWORD: \"CHANGE_ME\"/DATABASE_PASSWORD: \"$(openssl rand -hex 24)\"/" -e "s/SCALER_EVENTS_TOKEN: \"CHANGE_ME\"/SCALER_EVENTS_TOKEN: \"$(openssl rand -hex 32)\"/" | kubectl apply -f -
 ```
 
-These defaults use the EKS EBS CSI `gp3` storage class and the `ghcr.io/maimon33/scaler:latest` image. For production, use a private Helm values file or external secret manager, pin an image tag, configure IRSA or EKS Pod Identity, and set `secrets.slackWebhookUrl` if Slack alerts are required.
+These defaults use the EKS EBS CSI `gp3` storage class and the `236565801201.dkr.ecr.eu-central-1.amazonaws.com/scaler:latest` image. For production, use a private Helm values file or external secret manager, pin an image tag, configure IRSA or EKS Pod Identity, and set `secrets.slackWebhookUrl` if Slack alerts are required.
 
 ## Product premise: simpler on purpose
 
@@ -166,16 +166,28 @@ PostgreSQL is used instead of SQLite because it safely supports a future move to
 
 Before applying the manifest:
 
-1. Build and publish the application image as `ghcr.io/maimon33/scaler:latest`, or change the image reference in the manifest.
+1. Publish the application image as `236565801201.dkr.ecr.eu-central-1.amazonaws.com/scaler:latest`, or change the image reference in the manifest.
 2. Replace both `CHANGE_ME` values in `scaler-secrets`: use a strong database password and a separate long random event API token. For production, use External Secrets or your cluster's secret manager instead of committing real values.
 3. On EKS, install the EBS CSI driver. On another Kubernetes platform, change `scaler-gp3` to an available storage class and remove the included AWS storage class.
 4. If using OIDC/IRSA, uncomment the service-account role annotation and replace its example ARN.
 
-Build and publish the image:
+### Automated ECR publishing
+
+The [`Build and Push to ECR`](.github/workflows/build-and-push.yml) workflow runs on every push to `main` and can also be started manually. It follows the repository-standard AWS flow:
+
+- request a GitHub OIDC token and assume `arn:aws:iam::236565801201:role/maimons-infra-github-ssm`;
+- authenticate Docker to ECR in `eu-central-1`;
+- build the repository `Dockerfile`;
+- push `scaler:latest` and `scaler:<git-commit-sha>`.
+
+The ECR repository must already exist, and the IAM role trust policy must allow this GitHub repository. The role also needs ECR authorization and image-push permissions.
+
+To publish manually from a workstation:
 
 ```bash
-docker build -t ghcr.io/maimon33/scaler:latest .
-docker push ghcr.io/maimon33/scaler:latest
+aws ecr get-login-password --region eu-central-1 | docker login --username AWS --password-stdin 236565801201.dkr.ecr.eu-central-1.amazonaws.com
+docker build -t 236565801201.dkr.ecr.eu-central-1.amazonaws.com/scaler:latest .
+docker push 236565801201.dkr.ecr.eu-central-1.amazonaws.com/scaler:latest
 ```
 
 If the GHCR package is private, add an image-pull secret to the `scaler` namespace and reference it with `imagePullSecrets` in the Scaler pod specification.
