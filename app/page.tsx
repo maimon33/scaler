@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react';
 import {
   Activity,
   AlarmClock,
+  AlertTriangle,
   Check,
   ChevronDown,
   Clock3,
@@ -11,10 +12,13 @@ import {
   Copy,
   KeyRound,
   Layers3,
+  Lightbulb,
+  Lock,
   MoreHorizontal,
   Pause,
   Play,
   Plus,
+  Radio,
   Search,
   ShieldCheck,
   Sparkles,
@@ -30,6 +34,7 @@ type Service = {
   min: number;
   max: number;
   trigger: string;
+  owner: 'Scaler' | 'Native HPA' | 'Unmanaged';
   latency: string;
   state: 'Stable' | 'Scaling' | 'Paused';
 };
@@ -43,6 +48,7 @@ const initialServices: Service[] = [
     min: 4,
     max: 40,
     trigger: 'CPU · 61%',
+    owner: 'Native HPA',
     latency: '1.8s',
     state: 'Stable',
   },
@@ -54,6 +60,7 @@ const initialServices: Service[] = [
     min: 2,
     max: 80,
     trigger: 'SQS · 8.2k',
+    owner: 'Scaler',
     latency: '2.4s',
     state: 'Scaling',
   },
@@ -65,6 +72,7 @@ const initialServices: Service[] = [
     min: 3,
     max: 24,
     trigger: 'RPS · 1.4k',
+    owner: 'Native HPA',
     latency: '1.2s',
     state: 'Stable',
   },
@@ -76,6 +84,7 @@ const initialServices: Service[] = [
     min: 0,
     max: 30,
     trigger: 'Schedule',
+    owner: 'Scaler',
     latency: '—',
     state: 'Paused',
   },
@@ -91,6 +100,7 @@ export default function Home() {
   const [replicas, setReplicas] = useState(1);
   const [toast, setToast] = useState('');
   const [guideOpen, setGuideOpen] = useState(false);
+  const [suggestionDismissed, setSuggestionDismissed] = useState(false);
   const visible = useMemo(
     () =>
       services.filter((s) =>
@@ -109,6 +119,11 @@ export default function Home() {
   }
   function applyScale() {
     if (!scaleTarget) return;
+    if (scaleTarget.owner === 'Native HPA') {
+      notify(`Transfer plan drafted · ${scaleTarget.name} was not changed`);
+      setScaleTarget(null);
+      return;
+    }
     setServices((items) =>
       items.map((item) =>
         item.name === scaleTarget.name
@@ -194,11 +209,10 @@ export default function Home() {
           </nav>
           <div className="mt-auto rounded-xl border border-[#d7ded8] bg-[#fbfcfa] p-3.5">
             <div className="mb-2 flex items-center gap-2 text-xs font-semibold">
-              <ShieldCheck className="size-4 text-[#2d7a57]" /> kube-proxy
-              access
+              <ShieldCheck className="size-4 text-[#2d7a57]" /> Cluster API
             </div>
             <p className="text-[11px] leading-4 text-[#718078]">
-              Local proxy connected. No public endpoint is exposed.
+              In-cluster service account. HPA access is read-only.
             </p>
             <div className="mt-3 flex items-center gap-2 text-[11px] font-medium text-[#2d7a57]">
               <span className="size-1.5 rounded-full bg-[#28a66a]" /> Healthy ·
@@ -217,7 +231,7 @@ export default function Home() {
                 Scaling overview
               </h1>
               <p className="mt-1 text-sm text-[#6d7a72]">
-                Live replica state and operations across your cluster.
+                Safe, focused control for native workloads and AWS SQS.
               </p>
             </div>
             <div className="flex gap-2">
@@ -228,12 +242,30 @@ export default function Home() {
                 Connect source
               </button>
               <button
-                onClick={() => openScale(services[0])}
+                onClick={() => openScale(services[1])}
                 className="flex items-center gap-2 rounded-lg bg-[#153e32] px-3.5 py-2 text-sm font-semibold text-white shadow-sm"
               >
                 <Plus className="size-4" /> Scale workload
               </button>
             </div>
+          </div>
+
+          <div className="mb-6 flex flex-col gap-3 rounded-xl border border-[#cfded4] bg-[#edf5ef] px-4 py-3.5 sm:flex-row sm:items-center">
+            <div className="grid size-9 shrink-0 place-items-center rounded-lg bg-[#d8eadf] text-[#286449]">
+              <ShieldCheck className="size-4" />
+            </div>
+            <div>
+              <div className="text-sm font-semibold text-[#234b39]">
+                Simple by design
+              </div>
+              <p className="mt-0.5 text-xs leading-5 text-[#597064]">
+                Native Kubernetes first · AWS SQS is the only external source ·
+                existing HPA ownership is protected.
+              </p>
+            </div>
+            <span className="sm:ml-auto rounded-full border border-[#c4d9cb] bg-white/70 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-[#3d6d54]">
+              Narrow scope
+            </span>
           </div>
 
           <div className="mb-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -244,22 +276,22 @@ export default function Home() {
               icon={<Layers3 />}
             />
             <Metric
-              label="Operations · 1h"
-              value="142"
-              detail="99.3% successful"
-              icon={<Activity />}
+              label="Control sources"
+              value="2"
+              detail="Native Kubernetes + SQS"
+              icon={<Radio />}
             />
             <Metric
-              label="Median scale time"
-              value="1.9s"
-              detail="↓ 0.4s from yesterday"
+              label="Median API accept"
+              value="420ms"
+              detail="Pod readiness tracked separately"
               icon={<Clock3 />}
             />
             <Metric
-              label="Timeout budget"
-              value="2 / 20"
-              detail="10% consumed"
-              icon={<AlarmClock />}
+              label="Ownership guards"
+              value="2"
+              detail="HPA workloads are read-only"
+              icon={<Lock />}
               amber
             />
           </div>
@@ -272,7 +304,7 @@ export default function Home() {
                     Workloads
                   </h2>
                   <p className="mt-0.5 text-xs text-[#748078]">
-                    Desired state reconciles every second
+                    Ownership is checked before every write
                   </p>
                 </div>
                 <button
@@ -283,12 +315,13 @@ export default function Home() {
                 </button>
               </div>
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[720px] text-left text-sm">
+                <table className="w-full min-w-[820px] text-left text-sm">
                   <thead className="bg-[#f7f8f5] text-[10px] uppercase tracking-[0.08em] text-[#77837b]">
                     <tr>
                       <th className="px-5 py-2.5 font-semibold">Workload</th>
                       <th className="px-3 py-2.5 font-semibold">Replicas</th>
                       <th className="px-3 py-2.5 font-semibold">Signal</th>
+                      <th className="px-3 py-2.5 font-semibold">Owner</th>
                       <th className="px-3 py-2.5 font-semibold">
                         Last operation
                       </th>
@@ -334,6 +367,9 @@ export default function Home() {
                           {service.trigger}
                         </td>
                         <td className="px-3 py-3.5">
+                          <Owner owner={service.owner} />
+                        </td>
+                        <td className="px-3 py-3.5">
                           <div className="font-mono text-xs">
                             {service.latency}
                           </div>
@@ -347,9 +383,11 @@ export default function Home() {
                         <td className="px-5 py-3.5 text-right">
                           <button
                             onClick={() => openScale(service)}
-                            className="rounded-md border border-[#d5ddd6] bg-white px-2.5 py-1.5 text-xs font-semibold shadow-sm"
+                            className={`rounded-md border px-2.5 py-1.5 text-xs font-semibold shadow-sm ${service.owner === 'Native HPA' ? 'border-[#e3d4bd] bg-[#fffaf1] text-[#8a5a20]' : 'border-[#d5ddd6] bg-white'}`}
                           >
-                            Scale
+                            {service.owner === 'Native HPA'
+                              ? 'Inspect owner'
+                              : 'Scale'}
                           </button>
                         </td>
                       </tr>
@@ -360,42 +398,66 @@ export default function Home() {
             </div>
 
             <div className="space-y-5">
-              <div className="rounded-xl bg-[#163f33] p-5 text-white shadow-sm">
-                <div className="mb-4 flex items-start justify-between">
-                  <div className="grid size-9 place-items-center rounded-lg bg-white/10 text-[#a7f3d0]">
-                    <Sparkles className="size-4" />
+              {!suggestionDismissed ? (
+                <div className="rounded-xl bg-[#163f33] p-5 text-white shadow-sm">
+                  <div className="mb-4 flex items-start justify-between">
+                    <div className="grid size-9 place-items-center rounded-lg bg-white/10 text-[#a7f3d0]">
+                      <Sparkles className="size-4" />
+                    </div>
+                    <span className="rounded-full bg-[#d8f9e5] px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-[#1d6547]">
+                      Advisory
+                    </span>
                   </div>
-                  <span className="rounded-full bg-[#d8f9e5] px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-[#1d6547]">
-                    Suggestion
-                  </span>
+                  <h2 className="font-semibold">Add an SQS failure floor</h2>
+                  <p className="mt-2 text-xs leading-5 text-[#bfd1c8]">
+                    Queue metrics failed twice this week. Hold six workers after
+                    three failed polls instead of relying on stale data.
+                  </p>
+                  <div className="my-4 rounded-lg border border-white/10 bg-black/10 p-3 text-xs">
+                    <div className="flex justify-between">
+                      <span className="text-[#b5c9bf]">events-worker</span>
+                      <span className="font-mono">floor 6</span>
+                    </div>
+                    <div className="mt-2 flex justify-between">
+                      <span className="text-[#b5c9bf]">After</span>
+                      <span>3 failed polls</span>
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() =>
+                        notify('Policy draft created · no cluster change made')
+                      }
+                      className="flex-1 rounded-lg bg-[#d8f9e5] py-2 text-xs font-bold text-[#174b38]"
+                    >
+                      Review draft
+                    </button>
+                    <button
+                      onClick={() => setSuggestionDismissed(true)}
+                      className="rounded-lg border border-white/15 px-3 text-xs font-semibold"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
                 </div>
-                <h2 className="font-semibold">Prepare for the 09:00 peak</h2>
-                <p className="mt-2 text-xs leading-5 text-[#bfd1c8]">
-                  Checkout traffic rises 34% on weekdays. Pre-scale 8 minutes
-                  earlier to avoid cold starts.
-                </p>
-                <div className="my-4 rounded-lg border border-white/10 bg-black/10 p-3 text-xs">
-                  <div className="flex justify-between">
-                    <span className="text-[#b5c9bf]">checkout-api</span>
-                    <span className="font-mono">12 → 20</span>
-                  </div>
-                  <div className="mt-2 flex justify-between">
-                    <span className="text-[#b5c9bf]">Starts</span>
-                    <span>Mon–Fri · 08:52</span>
-                  </div>
-                </div>
-                <div className="flex gap-2">
+              ) : (
+                <div className="rounded-xl border border-dashed border-[#cfd8d1] bg-[#f8faf7] p-5">
+                  <Lightbulb className="size-5 text-[#5d7968]" />
+                  <h2 className="mt-3 text-sm font-semibold">
+                    Suggestion dismissed
+                  </h2>
+                  <p className="mt-1 text-xs leading-5 text-[#748078]">
+                    Recommendations remain advisory and never change cluster
+                    state by themselves.
+                  </p>
                   <button
-                    onClick={() => notify('Schedule suggestion applied')}
-                    className="flex-1 rounded-lg bg-[#d8f9e5] py-2 text-xs font-bold text-[#174b38]"
+                    onClick={() => setSuggestionDismissed(false)}
+                    className="mt-3 text-xs font-semibold text-[#28694b]"
                   >
-                    Apply schedule
-                  </button>
-                  <button className="rounded-lg border border-white/15 px-3 text-xs font-semibold">
-                    Dismiss
+                    Restore suggestion
                   </button>
                 </div>
-              </div>
+              )}
               <div className="rounded-xl border border-[#d9dfda] bg-white p-5">
                 <div className="mb-4 flex items-center justify-between">
                   <div>
@@ -465,6 +527,43 @@ export default function Home() {
               />
             </div>
           </div>
+
+          <div className="mt-6 rounded-xl border border-[#d9dfda] bg-white p-5">
+            <div className="mb-4 flex flex-col justify-between gap-2 sm:flex-row sm:items-end">
+              <div>
+                <div className="mb-1 text-[10px] font-bold uppercase tracking-[0.1em] text-[#718078]">
+                  Suggested roadmap
+                </div>
+                <h2 className="font-semibold">
+                  Small features with clear ownership
+                </h2>
+              </div>
+              <p className="max-w-md text-xs leading-5 text-[#7a867e]">
+                Each addition keeps the controller focused instead of growing a
+                generic trigger platform.
+              </p>
+            </div>
+            <div className="grid gap-3 md:grid-cols-3">
+              <FeatureSuggestion
+                stage="Now"
+                title="Ownership guard"
+                copy="Detect HPA or KEDA before writes and create a transfer plan instead of competing for replicas."
+                icon={<Lock />}
+              />
+              <FeatureSuggestion
+                stage="Next"
+                title="SQS failure policy"
+                copy="Choose hold-current or a safe replica floor when queue metrics become stale or unavailable."
+                icon={<Radio />}
+              />
+              <FeatureSuggestion
+                stage="Next"
+                title="Readiness SLO"
+                copy="Measure API acceptance, scheduling, and Ready pods separately so latency claims stay honest."
+                icon={<Clock3 />}
+              />
+            </div>
+          </div>
         </section>
       </div>
 
@@ -484,13 +583,19 @@ export default function Home() {
             <div className="flex items-start justify-between">
               <div>
                 <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.1em] text-[#718078]">
-                  Manual override
+                  {scaleTarget.owner === 'Native HPA'
+                    ? 'Ownership guard'
+                    : 'Manual override'}
                 </div>
                 <h2 className="text-xl font-semibold tracking-[-0.03em]">
-                  Scale {scaleTarget.name}
+                  {scaleTarget.owner === 'Native HPA'
+                    ? `${scaleTarget.name} is protected`
+                    : `Scale ${scaleTarget.name}`}
                 </h2>
                 <p className="mt-1 text-sm text-[#738078]">
-                  Applies immediately and pauses automation for 15 minutes.
+                  {scaleTarget.owner === 'Native HPA'
+                    ? 'Scaler will not compete with its existing controller.'
+                    : 'Applies immediately and pauses automation for 15 minutes.'}
                 </p>
               </div>
               <button
@@ -501,55 +606,83 @@ export default function Home() {
                 <X className="size-4" />
               </button>
             </div>
-            <div className="my-6 rounded-xl border border-[#dbe1dc] bg-white p-4">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium">Desired replicas</span>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() =>
-                      setReplicas(Math.max(scaleTarget.min, replicas - 1))
-                    }
-                    className="grid size-8 place-items-center rounded-lg border"
-                  >
-                    −
-                  </button>
-                  <input
-                    aria-label="Desired replicas"
-                    type="number"
-                    min={scaleTarget.min}
-                    max={scaleTarget.max}
-                    value={replicas}
-                    onChange={(e) =>
-                      setReplicas(
-                        Math.min(
-                          scaleTarget.max,
-                          Math.max(scaleTarget.min, Number(e.target.value)),
-                        ),
-                      )
-                    }
-                    className="h-10 w-16 rounded-lg border border-[#cdd6cf] text-center text-lg font-bold"
-                  />
-                  <button
-                    onClick={() =>
-                      setReplicas(Math.min(scaleTarget.max, replicas + 1))
-                    }
-                    className="grid size-8 place-items-center rounded-lg border"
-                  >
-                    +
-                  </button>
+            {scaleTarget.owner === 'Native HPA' ? (
+              <div className="my-6 rounded-xl border border-[#ead8ba] bg-[#fffaf0] p-4">
+                <div className="flex gap-3">
+                  <AlertTriangle className="mt-0.5 size-4 shrink-0 text-[#a76820]" />
+                  <div>
+                    <h3 className="text-sm font-semibold text-[#67451f]">
+                      Native HPA owns the replica field
+                    </h3>
+                    <p className="mt-1 text-xs leading-5 text-[#80623f]">
+                      A direct scale would be temporary and could cause
+                      controller flapping. Create a reviewable
+                      ownership-transfer plan before making this workload
+                      writable.
+                    </p>
+                  </div>
                 </div>
               </div>
-              <div className="mt-4 flex justify-between text-xs text-[#7c8981]">
-                <span>Min {scaleTarget.min}</span>
-                <span>Current {scaleTarget.current}</span>
-                <span>Max {scaleTarget.max}</span>
+            ) : (
+              <div className="my-6 rounded-xl border border-[#dbe1dc] bg-white p-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium">Desired replicas</span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() =>
+                        setReplicas(Math.max(scaleTarget.min, replicas - 1))
+                      }
+                      className="grid size-8 place-items-center rounded-lg border"
+                    >
+                      −
+                    </button>
+                    <input
+                      aria-label="Desired replicas"
+                      type="number"
+                      min={scaleTarget.min}
+                      max={scaleTarget.max}
+                      value={replicas}
+                      onChange={(e) =>
+                        setReplicas(
+                          Math.min(
+                            scaleTarget.max,
+                            Math.max(scaleTarget.min, Number(e.target.value)),
+                          ),
+                        )
+                      }
+                      className="h-10 w-16 rounded-lg border border-[#cdd6cf] text-center text-lg font-bold"
+                    />
+                    <button
+                      onClick={() =>
+                        setReplicas(Math.min(scaleTarget.max, replicas + 1))
+                      }
+                      className="grid size-8 place-items-center rounded-lg border"
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+                <div className="mt-4 flex justify-between text-xs text-[#7c8981]">
+                  <span>Min {scaleTarget.min}</span>
+                  <span>Current {scaleTarget.current}</span>
+                  <span>Max {scaleTarget.max}</span>
+                </div>
               </div>
-            </div>
+            )}
             <div className="mb-5 flex gap-3 rounded-lg bg-[#eef3ef] p-3 text-xs leading-5 text-[#59685f]">
               <Clock3 className="mt-0.5 size-4 shrink-0" />
               <span>
-                Request timeout is <strong>10 seconds</strong>. Late
-                reconciliations are recorded in Operations.
+                {scaleTarget.owner === 'Native HPA' ? (
+                  <>
+                    The plan records the current HPA configuration and makes{' '}
+                    <strong>no cluster change</strong>.
+                  </>
+                ) : (
+                  <>
+                    The <strong>10 second</strong> timeout covers API
+                    acceptance. Pod readiness is measured separately.
+                  </>
+                )}
               </span>
             </div>
             <div className="flex justify-end gap-2">
@@ -563,7 +696,15 @@ export default function Home() {
                 onClick={applyScale}
                 className="flex items-center gap-2 rounded-lg bg-[#153e32] px-4 py-2 text-sm font-semibold text-white"
               >
-                <Zap className="size-4" /> Apply scale
+                {scaleTarget.owner === 'Native HPA' ? (
+                  <>
+                    <Lock className="size-4" /> Draft transfer plan
+                  </>
+                ) : (
+                  <>
+                    <Zap className="size-4" /> Apply scale
+                  </>
+                )}
               </button>
             </div>
           </dialog>
@@ -588,8 +729,8 @@ export default function Home() {
                   Connect AWS & Kubernetes
                 </h2>
                 <p className="mt-2 text-sm leading-6 text-[#6f7d75]">
-                  Start with local kube-proxy access, then choose how Scaler
-                  assumes AWS permissions.
+                  Use local kube-proxy only for development. In-cluster, Scaler
+                  uses its service account and a focused SQS identity.
                 </p>
               </div>
               <button
@@ -602,28 +743,28 @@ export default function Home() {
             <div className="mt-7 space-y-4">
               <GuideStep
                 n="1"
-                title="Start kube-proxy"
-                copy="Forward the in-cluster API locally. No public ingress is required."
+                title="Local development only"
+                copy="Forward the API while developing. The production browser never talks to kube-proxy."
                 code="kubectl proxy --port=8001"
               />
               <GuideStep
                 n="2"
-                title="Use the node role"
-                copy="On EKS, Scaler can use the worker node instance profile. No static keys are stored."
-                code="AWS_CREDENTIAL_MODE=node"
+                title="Use in-cluster Kubernetes access"
+                copy="The server uses its service-account token. HPA resources are discovered read-only."
+                code="serviceAccountName: scaler"
               />
               <GuideStep
                 n="3"
-                title="Attach an OIDC role (recommended)"
-                copy="Create a least-privilege service account role and attach it to Scaler."
+                title="Attach an SQS-only role"
+                copy="Use IRSA or EKS Pod Identity with only the queue inspection actions Scaler needs."
                 code={
                   'eksctl create iamserviceaccount \\\n  --name scaler --namespace scaler \\\n  --attach-role-arn arn:aws:iam::123456789012:role/scaler'
                 }
               />
               <GuideStep
                 n="4"
-                title="Add access keys"
-                copy="For local development only, pass keys as environment variables or mounted secrets."
+                title="Static keys for local testing"
+                copy="If necessary, pass short-lived credentials locally. Never store them in the image or browser."
                 code={'AWS_ACCESS_KEY_ID=…\nAWS_SECRET_ACCESS_KEY=…'}
               />
             </div>
@@ -697,6 +838,49 @@ function State({ state }: { state: Service['state'] }) {
       )}
       {state}
     </span>
+  );
+}
+function Owner({ owner }: { owner: Service['owner'] }) {
+  const protectedOwner = owner === 'Native HPA';
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-[10px] font-bold ${
+        protectedOwner
+          ? 'bg-[#fff4df] text-[#8b5b22]'
+          : owner === 'Scaler'
+            ? 'bg-[#e4f3e9] text-[#28704e]'
+            : 'bg-[#eceeeb] text-[#69736d]'
+      }`}
+    >
+      {protectedOwner ? <Lock className="size-2.5" /> : null}
+      {owner}
+    </span>
+  );
+}
+function FeatureSuggestion({
+  stage,
+  title,
+  copy,
+  icon,
+}: {
+  stage: string;
+  title: string;
+  copy: string;
+  icon: React.ReactNode;
+}) {
+  return (
+    <article className="rounded-lg border border-[#dfe4e0] bg-[#fafbf9] p-4">
+      <div className="flex items-center justify-between">
+        <span className="grid size-8 place-items-center rounded-lg bg-[#e4efe8] text-[#347454] [&>svg]:size-3.5">
+          {icon}
+        </span>
+        <span className="rounded-full bg-[#e8ece8] px-2 py-1 text-[9px] font-bold uppercase tracking-wide text-[#67736c]">
+          {stage}
+        </span>
+      </div>
+      <h3 className="mt-3 text-sm font-semibold">{title}</h3>
+      <p className="mt-1 text-xs leading-5 text-[#748078]">{copy}</p>
+    </article>
   );
 }
 function Schedule({

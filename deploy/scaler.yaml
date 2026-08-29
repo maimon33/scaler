@@ -1,0 +1,397 @@
+# Scaler Kubernetes deployment
+#
+# Before applying:
+#   1. Build and publish ghcr.io/maimon33/scaler:latest.
+#   2. Replace CHANGE_ME in the scaler-secrets Secret.
+#   3. On EKS, install the EBS CSI driver or replace scaler-gp3 with an
+#      existing StorageClass.
+#   4. For IRSA, uncomment the role annotation on the scaler ServiceAccount.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: scaler
+  labels:
+    app.kubernetes.io/part-of: scaler
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: scaler-gp3
+  labels:
+    app.kubernetes.io/part-of: scaler
+provisioner: ebs.csi.aws.com
+parameters:
+  type: gp3
+  encrypted: "true"
+reclaimPolicy: Retain
+allowVolumeExpansion: true
+volumeBindingMode: WaitForFirstConsumer
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: scaler
+  namespace: scaler
+  labels:
+    app.kubernetes.io/name: scaler
+  # Uncomment after creating the IAM role and EKS OIDC trust relationship.
+  # annotations:
+  #   eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/scaler
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: scaler-controller
+  labels:
+    app.kubernetes.io/name: scaler
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces", "pods", "events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale", "statefulsets/scale"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    # HPA is an external owner. Scaler discovers it but does not mutate it.
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: scaler-controller
+  labels:
+    app.kubernetes.io/name: scaler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: scaler-controller
+subjects:
+  - kind: ServiceAccount
+    name: scaler
+    namespace: scaler
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: scaler-config
+  namespace: scaler
+  labels:
+    app.kubernetes.io/name: scaler
+data:
+  AWS_CREDENTIAL_MODE: "node"
+  AWS_REGION: "us-east-1"
+  DATABASE_HOST: "scaler-postgres"
+  DATABASE_PORT: "5432"
+  DATABASE_NAME: "scaler"
+  DATABASE_USER: "scaler"
+  HISTORY_RETENTION_DAYS: "90"
+  # Times out the Kubernetes API operation, not Pod readiness.
+  OPERATION_TIMEOUT_SECONDS: "10"
+  # The initial external policy is intentionally limited to AWS SQS.
+  SQS_POLL_INTERVAL_SECONDS: "5"
+  SQS_STALE_AFTER_SECONDS: "30"
+  SQS_FAILURE_POLICY: "hold-current"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: scaler-secrets
+  namespace: scaler
+  labels:
+    app.kubernetes.io/name: scaler
+type: Opaque
+stringData:
+  # Replace before applying. Prefer an external secret manager in production.
+  DATABASE_PASSWORD: "CHANGE_ME"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: scaler-database-schema
+  namespace: scaler
+  labels:
+    app.kubernetes.io/name: scaler-postgres
+data:
+  001-schema.sql: |
+    CREATE TABLE IF NOT EXISTS operations (
+      id BIGSERIAL PRIMARY KEY,
+      request_id UUID NOT NULL UNIQUE,
+      cluster_name TEXT NOT NULL,
+      namespace TEXT NOT NULL,
+      workload_kind TEXT NOT NULL,
+      workload_name TEXT NOT NULL,
+      source TEXT NOT NULL,
+      previous_replicas INTEGER,
+      desired_replicas INTEGER NOT NULL CHECK (desired_replicas >= 0),
+      status TEXT NOT NULL CHECK (status IN ('pending', 'succeeded', 'failed', 'timed_out')),
+      requested_by TEXT,
+      error_message TEXT,
+      started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      finished_at TIMESTAMPTZ,
+      duration_ms INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0),
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+    );
+
+    CREATE INDEX IF NOT EXISTS operations_workload_started_idx
+      ON operations (cluster_name, namespace, workload_name, started_at DESC);
+    CREATE INDEX IF NOT EXISTS operations_status_started_idx
+      ON operations (status, started_at DESC);
+
+    CREATE TABLE IF NOT EXISTS schedules (
+      id BIGSERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      cluster_name TEXT NOT NULL,
+      namespace TEXT NOT NULL,
+      workload_kind TEXT NOT NULL DEFAULT 'Deployment',
+      workload_name TEXT NOT NULL,
+      desired_replicas INTEGER NOT NULL CHECK (desired_replicas >= 0),
+      cron_expression TEXT NOT NULL,
+      timezone TEXT NOT NULL DEFAULT 'UTC',
+      enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      source TEXT NOT NULL DEFAULT 'manual',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS schedules_enabled_idx
+      ON schedules (enabled, cluster_name, namespace);
+
+    CREATE TABLE IF NOT EXISTS scaling_suggestions (
+      id BIGSERIAL PRIMARY KEY,
+      cluster_name TEXT NOT NULL,
+      namespace TEXT NOT NULL,
+      workload_name TEXT NOT NULL,
+      suggested_replicas INTEGER NOT NULL CHECK (suggested_replicas >= 0),
+      suggested_start TIMESTAMPTZ,
+      reason TEXT NOT NULL,
+      confidence NUMERIC(5, 4) CHECK (confidence BETWEEN 0 AND 1),
+      status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'accepted', 'dismissed', 'expired')),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: scaler-history
+  namespace: scaler
+  labels:
+    app.kubernetes.io/name: scaler-postgres
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: scaler-gp3
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scaler-postgres
+  namespace: scaler
+  labels:
+    app.kubernetes.io/name: scaler-postgres
+    app.kubernetes.io/component: database
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: scaler-postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: scaler-postgres
+        app.kubernetes.io/component: database
+    spec:
+      securityContext:
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: scaler-config
+                  key: DATABASE_NAME
+            - name: POSTGRES_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: scaler-config
+                  key: DATABASE_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: scaler-secrets
+                  key: DATABASE_PASSWORD
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: history
+              mountPath: /var/lib/postgresql/data
+            - name: schema
+              mountPath: /docker-entrypoint-initdb.d/001-schema.sql
+              subPath: 001-schema.sql
+              readOnly: true
+      volumes:
+        - name: history
+          persistentVolumeClaim:
+            claimName: scaler-history
+        - name: schema
+          configMap:
+            name: scaler-database-schema
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: scaler-postgres
+  namespace: scaler
+  labels:
+    app.kubernetes.io/name: scaler-postgres
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: scaler-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scaler
+  namespace: scaler
+  labels:
+    app.kubernetes.io/name: scaler
+    app.kubernetes.io/component: control-plane
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: scaler
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: scaler
+        app.kubernetes.io/component: control-plane
+    spec:
+      serviceAccountName: scaler
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: scaler
+          image: ghcr.io/maimon33/scaler:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 3000
+          envFrom:
+            - configMapRef:
+                name: scaler-config
+          env:
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: scaler-secrets
+                  key: DATABASE_PASSWORD
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: scaler
+  namespace: scaler
+  labels:
+    app.kubernetes.io/name: scaler
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: scaler
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: scaler-postgres
+  namespace: scaler
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: scaler-postgres
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: scaler
+      ports:
+        - protocol: TCP
+          port: 5432
