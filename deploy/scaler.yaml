@@ -135,6 +135,7 @@ data:
       started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       finished_at TIMESTAMPTZ,
       duration_ms INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0),
+      retention_days INTEGER NOT NULL DEFAULT 30 CHECK (retention_days BETWEEN 1 AND 3650),
       metadata JSONB NOT NULL DEFAULT '{}'::jsonb
     );
 
@@ -142,6 +143,18 @@ data:
       ON operations (cluster_name, namespace, workload_name, started_at DESC);
     CREATE INDEX IF NOT EXISTS operations_status_started_idx
       ON operations (status, started_at DESC);
+
+    CREATE TABLE IF NOT EXISTS operation_events (
+      id BIGSERIAL PRIMARY KEY,
+      operation_id BIGINT NOT NULL REFERENCES operations(id) ON DELETE CASCADE,
+      event_type TEXT NOT NULL,
+      message TEXT,
+      occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+    );
+
+    CREATE INDEX IF NOT EXISTS operation_events_retention_idx
+      ON operation_events (operation_id, occurred_at);
 
     CREATE TABLE IF NOT EXISTS schedules (
       id BIGSERIAL PRIMARY KEY,
@@ -153,6 +166,7 @@ data:
       desired_replicas INTEGER NOT NULL CHECK (desired_replicas >= 0),
       cron_expression TEXT NOT NULL,
       timezone TEXT NOT NULL DEFAULT 'UTC',
+      event_retention_days INTEGER NOT NULL DEFAULT 30 CHECK (event_retention_days BETWEEN 1 AND 3650),
       enabled BOOLEAN NOT NULL DEFAULT TRUE,
       source TEXT NOT NULL DEFAULT 'manual',
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -291,6 +305,87 @@ spec:
     - name: postgres
       port: 5432
       targetPort: postgres
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: scaler-retention
+  namespace: scaler
+  labels:
+    app.kubernetes.io/name: scaler
+    app.kubernetes.io/component: retention
+spec:
+  schedule: "15 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: scaler
+            app.kubernetes.io/component: retention
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 70
+            runAsGroup: 70
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: purge-expired-events
+              image: postgres:17-alpine
+              command: ["psql"]
+              args:
+                - "-v"
+                - "ON_ERROR_STOP=1"
+                - "-c"
+                - >-
+                  DELETE FROM operation_events AS event
+                  USING operations AS operation
+                  WHERE event.operation_id = operation.id
+                  AND event.occurred_at < NOW() - make_interval(days => operation.retention_days);
+              env:
+                - name: PGHOST
+                  valueFrom:
+                    configMapKeyRef:
+                      name: scaler-config
+                      key: DATABASE_HOST
+                - name: PGPORT
+                  valueFrom:
+                    configMapKeyRef:
+                      name: scaler-config
+                      key: DATABASE_PORT
+                - name: PGDATABASE
+                  valueFrom:
+                    configMapKeyRef:
+                      name: scaler-config
+                      key: DATABASE_NAME
+                - name: PGUSER
+                  valueFrom:
+                    configMapKeyRef:
+                      name: scaler-config
+                      key: DATABASE_USER
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: scaler-secrets
+                      key: DATABASE_PASSWORD
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  cpu: 100m
+                  memory: 128Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
 ---
 apiVersion: apps/v1
 kind: Deployment

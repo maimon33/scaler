@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   AlarmClock,
@@ -10,18 +10,23 @@ import {
   Clock3,
   Cloud,
   Copy,
+  History,
   KeyRound,
   Layers3,
   Lightbulb,
   Lock,
+  Pencil,
   MoreHorizontal,
   Pause,
   Play,
   Plus,
   Radio,
+  RotateCcw,
   Search,
   ShieldCheck,
   Sparkles,
+  TimerReset,
+  Undo2,
   X,
   Zap,
 } from 'lucide-react';
@@ -37,6 +42,22 @@ type Service = {
   owner: 'Scaler' | 'Native HPA' | 'Unmanaged';
   latency: string;
   state: 'Stable' | 'Scaling' | 'Paused';
+};
+
+type Operation = {
+  id: string;
+  workload: string;
+  namespace: string;
+  kind: 'Scale' | 'Schedule' | 'Revert';
+  from: number;
+  to: number;
+  status: 'Running' | 'Succeeded' | 'Timed out' | 'Scheduled';
+  elapsedSeconds: number;
+  timeoutSeconds: number;
+  actor: string;
+  retentionDays: number;
+  editable: boolean;
+  reversible: boolean;
 };
 
 const initialServices: Service[] = [
@@ -90,16 +111,84 @@ const initialServices: Service[] = [
   },
 ];
 
+const initialOperations: Operation[] = [
+  {
+    id: 'op-0142',
+    workload: 'events-worker',
+    namespace: 'production',
+    kind: 'Scale',
+    from: 18,
+    to: 24,
+    status: 'Running',
+    elapsedSeconds: 7,
+    timeoutSeconds: 30,
+    actor: 'SQS policy',
+    retentionDays: 30,
+    editable: false,
+    reversible: false,
+  },
+  {
+    id: 'op-0141',
+    workload: 'pdf-renderer',
+    namespace: 'jobs',
+    kind: 'Scale',
+    from: 0,
+    to: 8,
+    status: 'Succeeded',
+    elapsedSeconds: 3,
+    timeoutSeconds: 10,
+    actor: 'AM',
+    retentionDays: 90,
+    editable: false,
+    reversible: true,
+  },
+  {
+    id: 'op-0140',
+    workload: 'events-worker',
+    namespace: 'production',
+    kind: 'Scale',
+    from: 18,
+    to: 36,
+    status: 'Timed out',
+    elapsedSeconds: 10,
+    timeoutSeconds: 10,
+    actor: 'Schedule',
+    retentionDays: 14,
+    editable: false,
+    reversible: false,
+  },
+  {
+    id: 'op-0139',
+    workload: 'pdf-renderer',
+    namespace: 'jobs',
+    kind: 'Schedule',
+    from: 8,
+    to: 0,
+    status: 'Scheduled',
+    elapsedSeconds: 0,
+    timeoutSeconds: 10,
+    actor: 'Schedule · 23:30',
+    retentionDays: 30,
+    editable: true,
+    reversible: false,
+  },
+];
+
 const nav = ['Overview', 'Workloads', 'Schedules', 'Operations', 'Connections'];
 
 export default function Home() {
   const [services, setServices] = useState(initialServices);
+  const [operations, setOperations] = useState(initialOperations);
   const [active, setActive] = useState('Overview');
   const [query, setQuery] = useState('');
   const [scaleTarget, setScaleTarget] = useState<Service | null>(null);
   const [replicas, setReplicas] = useState(1);
   const [toast, setToast] = useState('');
   const [guideOpen, setGuideOpen] = useState(false);
+  const [editTarget, setEditTarget] = useState<Operation | null>(null);
+  const [editReplicas, setEditReplicas] = useState(0);
+  const [editTimeout, setEditTimeout] = useState(10);
+  const [editRetention, setEditRetention] = useState(30);
   const [suggestionDismissed, setSuggestionDismissed] = useState(false);
   const visible = useMemo(
     () =>
@@ -109,6 +198,21 @@ export default function Home() {
     [services, query],
   );
 
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setOperations((items) =>
+        items.map((operation) => {
+          if (operation.status !== 'Running') return operation;
+          const elapsedSeconds = operation.elapsedSeconds + 1;
+          return elapsedSeconds >= operation.timeoutSeconds
+            ? { ...operation, elapsedSeconds, status: 'Timed out' }
+            : { ...operation, elapsedSeconds };
+        }),
+      );
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   function openScale(service: Service) {
     setScaleTarget(service);
     setReplicas(service.desired);
@@ -116,6 +220,65 @@ export default function Home() {
   function notify(message: string) {
     setToast(message);
     window.setTimeout(() => setToast(''), 3200);
+  }
+  function rerunOperation(operation: Operation) {
+    const next: Operation = {
+      ...operation,
+      id: `op-${Date.now()}`,
+      status: 'Running',
+      elapsedSeconds: 0,
+      actor: 'Re-run · AM',
+      editable: false,
+      reversible: false,
+    };
+    setOperations((items) => [next, ...items]);
+    notify(`Re-run started · ${operation.workload} → ${operation.to}`);
+  }
+  function revertOperation(operation: Operation) {
+    const next: Operation = {
+      ...operation,
+      id: `op-${Date.now()}`,
+      kind: 'Revert',
+      from: operation.to,
+      to: operation.from,
+      status: 'Running',
+      elapsedSeconds: 0,
+      actor: `Revert ${operation.id} · AM`,
+      editable: false,
+      reversible: false,
+    };
+    setOperations((items) => [next, ...items]);
+    setServices((items) =>
+      items.map((service) =>
+        service.name === operation.workload
+          ? { ...service, desired: operation.from, state: 'Scaling' }
+          : service,
+      ),
+    );
+    notify(`Revert started · ${operation.workload} → ${operation.from}`);
+  }
+  function openOperationEditor(operation: Operation) {
+    setEditTarget(operation);
+    setEditReplicas(operation.to);
+    setEditTimeout(operation.timeoutSeconds);
+    setEditRetention(operation.retentionDays);
+  }
+  function saveOperationEdit() {
+    if (!editTarget) return;
+    setOperations((items) =>
+      items.map((operation) =>
+        operation.id === editTarget.id
+          ? {
+              ...operation,
+              to: editReplicas,
+              timeoutSeconds: editTimeout,
+              retentionDays: editRetention,
+            }
+          : operation,
+      ),
+    );
+    notify(`Schedule updated · ${editTarget.workload} → ${editReplicas}`);
+    setEditTarget(null);
   }
   function applyScale() {
     if (!scaleTarget) return;
@@ -135,6 +298,24 @@ export default function Home() {
           : item,
       ),
     );
+    setOperations((items) => [
+      {
+        id: `op-${Date.now()}`,
+        workload: scaleTarget.name,
+        namespace: scaleTarget.namespace,
+        kind: 'Scale',
+        from: scaleTarget.current,
+        to: replicas,
+        status: 'Running',
+        elapsedSeconds: 0,
+        timeoutSeconds: 10,
+        actor: 'Manual override · AM',
+        retentionDays: 30,
+        editable: false,
+        reversible: false,
+      },
+      ...items,
+    ]);
     notify(`Scale request sent · ${scaleTarget.name} → ${replicas} replicas`);
     setScaleTarget(null);
   }
@@ -193,14 +374,25 @@ export default function Home() {
               return (
                 <button
                   key={item}
-                  onClick={() => setActive(item)}
+                  onClick={() => {
+                    setActive(item);
+                    if (item === 'Connections') {
+                      setGuideOpen(true);
+                      return;
+                    }
+                    const target =
+                      item === 'Overview'
+                        ? document.body
+                        : document.getElementById(item.toLowerCase());
+                    target?.scrollIntoView({ behavior: 'smooth' });
+                  }}
                   className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm transition ${active === item ? 'bg-[#e2e9e3] font-semibold text-[#153e32]' : 'text-[#607068] hover:bg-[#eaede9]'}`}
                 >
                   <Icon className="size-4" />
                   {item}
                   {item === 'Operations' && (
                     <span className="ml-auto rounded-full bg-[#d9e0da] px-1.5 text-[10px]">
-                      4
+                      {operations.length}
                     </span>
                   )}
                 </button>
@@ -296,8 +488,68 @@ export default function Home() {
             />
           </div>
 
+          <section
+            id="operations"
+            aria-labelledby="operations-heading"
+            className="mb-6 overflow-hidden rounded-xl border border-[#d9dfda] bg-white shadow-[0_1px_2px_rgba(20,40,30,.03)]"
+          >
+            <div className="flex flex-col justify-between gap-3 border-b border-[#e0e4e0] px-5 py-4 sm:flex-row sm:items-center">
+              <div>
+                <div className="mb-1 flex items-center gap-2">
+                  <span className="flex size-2">
+                    <span className="absolute inline-flex size-2 animate-ping rounded-full bg-[#49a978] opacity-60" />
+                    <span className="relative inline-flex size-2 rounded-full bg-[#2d8a5d]" />
+                  </span>
+                  <span className="text-[10px] font-bold uppercase tracking-[0.1em] text-[#4f7863]">
+                    Live operations
+                  </span>
+                </div>
+                <h2
+                  id="operations-heading"
+                  className="font-semibold tracking-[-0.02em]"
+                >
+                  Current and recent operations
+                </h2>
+                <p className="mt-0.5 text-xs text-[#748078]">
+                  Timed attempts stay immutable; re-runs and reverts create new
+                  audit records.
+                </p>
+              </div>
+              <div className="flex items-center gap-2 text-xs">
+                <span className="rounded-full bg-[#e5f4ea] px-2.5 py-1 font-semibold text-[#2d7150]">
+                  {
+                    operations.filter((item) => item.status === 'Running')
+                      .length
+                  }{' '}
+                  running
+                </span>
+                <span className="rounded-full bg-[#f4eee4] px-2.5 py-1 font-semibold text-[#8b642e]">
+                  {
+                    operations.filter((item) => item.status === 'Timed out')
+                      .length
+                  }{' '}
+                  timed out
+                </span>
+              </div>
+            </div>
+            <div className="divide-y divide-[#e7eae7]">
+              {operations.map((operation) => (
+                <OperationRow
+                  key={operation.id}
+                  operation={operation}
+                  onEdit={openOperationEditor}
+                  onRerun={rerunOperation}
+                  onRevert={revertOperation}
+                />
+              ))}
+            </div>
+          </section>
+
           <div className="mb-6 grid gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
-            <div className="overflow-hidden rounded-xl border border-[#d9dfda] bg-white shadow-[0_1px_2px_rgba(20,40,30,.03)]">
+            <div
+              id="workloads"
+              className="overflow-hidden rounded-xl border border-[#d9dfda] bg-white shadow-[0_1px_2px_rgba(20,40,30,.03)]"
+            >
               <div className="flex items-center justify-between border-b border-[#e0e4e0] px-5 py-4">
                 <div>
                   <h2 className="font-semibold tracking-[-0.02em]">
@@ -485,7 +737,12 @@ export default function Home() {
                 <div className="mt-4 flex items-center justify-between border-t border-[#e4e8e4] pt-3 text-xs">
                   <span className="text-[#7a867e]">2 timeouts · 0 errors</span>
                   <button
-                    onClick={() => setActive('Operations')}
+                    onClick={() => {
+                      setActive('Operations');
+                      document
+                        .getElementById('operations')
+                        ?.scrollIntoView({ behavior: 'smooth' });
+                    }}
                     className="font-semibold text-[#266749]"
                   >
                     View operations
@@ -495,7 +752,10 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="rounded-xl border border-[#d9dfda] bg-white p-5">
+          <div
+            id="schedules"
+            className="rounded-xl border border-[#d9dfda] bg-white p-5"
+          >
             <div className="mb-4 flex items-center justify-between">
               <div>
                 <h2 className="font-semibold">Today’s schedules</h2>
@@ -566,6 +826,117 @@ export default function Home() {
           </div>
         </section>
       </div>
+
+      {editTarget && (
+        <div
+          role="presentation"
+          className="fixed inset-0 z-50 grid place-items-center bg-[#10221b]/30 p-4 backdrop-blur-[2px]"
+          onMouseDown={(event) =>
+            event.target === event.currentTarget && setEditTarget(null)
+          }
+        >
+          <dialog
+            open
+            aria-modal="true"
+            aria-labelledby="edit-operation-title"
+            className="w-full max-w-md rounded-2xl border border-[#d8dfd9] bg-[#fbfcfa] p-5 shadow-2xl"
+          >
+            <div className="flex items-start justify-between">
+              <div>
+                <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.1em] text-[#718078]">
+                  Pending operation
+                </div>
+                <h2
+                  id="edit-operation-title"
+                  className="text-xl font-semibold tracking-[-0.03em]"
+                >
+                  Edit {editTarget.workload}
+                </h2>
+                <p className="mt-1 text-sm text-[#738078]">
+                  Changes are allowed until this scheduled operation begins.
+                </p>
+              </div>
+              <button
+                aria-label="Close operation editor"
+                onClick={() => setEditTarget(null)}
+                className="rounded-lg p-1.5"
+              >
+                <X className="size-4" />
+              </button>
+            </div>
+            <div className="my-6 space-y-4 rounded-xl border border-[#dbe1dc] bg-white p-4">
+              <label className="block text-sm font-medium">
+                Desired replicas
+                <input
+                  aria-label="Operation desired replicas"
+                  type="number"
+                  min="0"
+                  value={editReplicas}
+                  onChange={(event) =>
+                    setEditReplicas(Math.max(0, Number(event.target.value)))
+                  }
+                  className="mt-2 h-10 w-full rounded-lg border border-[#cdd6cf] px-3"
+                />
+              </label>
+              <label className="block text-sm font-medium">
+                API timeout · seconds
+                <input
+                  aria-label="Operation timeout seconds"
+                  type="number"
+                  min="1"
+                  max="300"
+                  value={editTimeout}
+                  onChange={(event) =>
+                    setEditTimeout(
+                      Math.min(300, Math.max(1, Number(event.target.value))),
+                    )
+                  }
+                  className="mt-2 h-10 w-full rounded-lg border border-[#cdd6cf] px-3"
+                />
+              </label>
+              <label className="block text-sm font-medium">
+                Event retention
+                <select
+                  aria-label="Event retention period"
+                  value={editRetention}
+                  onChange={(event) =>
+                    setEditRetention(Number(event.target.value))
+                  }
+                  className="mt-2 h-10 w-full rounded-lg border border-[#cdd6cf] bg-white px-3"
+                >
+                  <option value="1">1 day</option>
+                  <option value="7">7 days</option>
+                  <option value="14">14 days</option>
+                  <option value="30">30 days</option>
+                  <option value="90">90 days</option>
+                  <option value="365">365 days</option>
+                </select>
+              </label>
+            </div>
+            <div className="mb-5 flex gap-3 rounded-lg bg-[#fff5e5] p-3 text-xs leading-5 text-[#755329]">
+              <History className="mt-0.5 size-4 shrink-0" />
+              <span>
+                Events older than <strong>{editRetention} days</strong> are
+                permanently purged by the nightly retention sweep.
+              </span>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setEditTarget(null)}
+                className="rounded-lg border bg-white px-4 py-2 text-sm font-semibold"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={saveOperationEdit}
+                className="flex items-center gap-2 rounded-lg bg-[#153e32] px-4 py-2 text-sm font-semibold text-white"
+              >
+                <Pencil className="size-4" /> Save changes
+              </button>
+            </div>
+          </dialog>
+        </div>
+      )}
 
       {scaleTarget && (
         <div
@@ -816,6 +1187,124 @@ function Metric({
       </div>
       <div className="mt-1 text-[11px] text-[#7b877f]">{detail}</div>
     </div>
+  );
+}
+function OperationRow({
+  operation,
+  onEdit,
+  onRerun,
+  onRevert,
+}: {
+  operation: Operation;
+  onEdit: (operation: Operation) => void;
+  onRerun: (operation: Operation) => void;
+  onRevert: (operation: Operation) => void;
+}) {
+  const running = operation.status === 'Running';
+  const progress = Math.min(
+    100,
+    (operation.elapsedSeconds / operation.timeoutSeconds) * 100,
+  );
+  const statusStyle =
+    operation.status === 'Succeeded'
+      ? 'bg-[#e4f3e9] text-[#28704e]'
+      : operation.status === 'Running'
+        ? 'bg-[#e6eff7] text-[#326c91]'
+        : operation.status === 'Timed out'
+          ? 'bg-[#fff0df] text-[#9a5e1f]'
+          : 'bg-[#eceeeb] text-[#69736d]';
+  return (
+    <article
+      data-operation-id={operation.id}
+      className="grid gap-4 px-5 py-4 lg:grid-cols-[minmax(210px,1.2fr)_minmax(180px,.8fr)_minmax(170px,.7fr)_auto] lg:items-center"
+    >
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <span
+            className={`inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-[10px] font-bold ${statusStyle}`}
+          >
+            {running ? <Activity className="size-3" /> : null}
+            {operation.status}
+          </span>
+          {operation.reversible ? (
+            <span className="inline-flex items-center gap-1 rounded-full border border-[#cfe0d5] bg-[#f4faf6] px-2 py-1 text-[10px] font-bold text-[#3c6f55]">
+              <Undo2 className="size-2.5" /> Reversible
+            </span>
+          ) : null}
+          <span className="font-mono text-[10px] text-[#8a958e]">
+            {operation.id}
+          </span>
+        </div>
+        <div className="mt-2 truncate text-sm font-semibold text-[#26342d]">
+          {operation.kind} · {operation.workload}
+        </div>
+        <div className="mt-0.5 text-[11px] text-[#7d8981]">
+          {operation.namespace} · {operation.actor}
+        </div>
+      </div>
+      <div>
+        <div className="text-xs font-semibold text-[#59685f]">
+          {operation.from} → {operation.to} replicas
+        </div>
+        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[#e6eae7]">
+          <div
+            className={`h-full rounded-full transition-[width] ${operation.status === 'Timed out' ? 'bg-[#d79548]' : 'bg-[#4b9270]'}`}
+            style={{ width: `${running ? Math.max(5, progress) : 100}%` }}
+          />
+        </div>
+        <div className="mt-1.5 flex justify-between font-mono text-[10px] text-[#7c8981]">
+          <span>
+            {operation.status === 'Scheduled'
+              ? 'Starts 23:30'
+              : `${operation.elapsedSeconds}s elapsed`}
+          </span>
+          <span>{operation.timeoutSeconds}s limit</span>
+        </div>
+      </div>
+      <div className="flex items-start gap-2 text-xs text-[#68766e]">
+        <History className="mt-0.5 size-3.5 shrink-0" />
+        <div>
+          <div className="font-semibold text-[#4e5f55]">
+            Retain {operation.retentionDays} days
+          </div>
+          <div className="mt-0.5 text-[10px] leading-4 text-[#849087]">
+            Older events purge nightly
+          </div>
+        </div>
+      </div>
+      <div className="flex flex-wrap justify-start gap-2 lg:justify-end">
+        {operation.editable ? (
+          <button
+            onClick={() => onEdit(operation)}
+            className="inline-flex items-center gap-1.5 rounded-md border border-[#d5ddd6] bg-white px-2.5 py-1.5 text-xs font-semibold shadow-sm"
+          >
+            <Pencil className="size-3" /> Edit
+          </button>
+        ) : null}
+        {operation.status === 'Succeeded' ||
+        operation.status === 'Timed out' ? (
+          <button
+            onClick={() => onRerun(operation)}
+            className="inline-flex items-center gap-1.5 rounded-md border border-[#d5ddd6] bg-white px-2.5 py-1.5 text-xs font-semibold shadow-sm"
+          >
+            <RotateCcw className="size-3" /> Re-run
+          </button>
+        ) : null}
+        {operation.reversible && operation.status === 'Succeeded' ? (
+          <button
+            onClick={() => onRevert(operation)}
+            className="inline-flex items-center gap-1.5 rounded-md border border-[#d8c8ad] bg-[#fffaf1] px-2.5 py-1.5 text-xs font-semibold text-[#81571f] shadow-sm"
+          >
+            <Undo2 className="size-3" /> Revert
+          </button>
+        ) : null}
+        {running ? (
+          <span className="inline-flex items-center gap-1.5 px-1 text-[10px] font-semibold text-[#6f7d75]">
+            <TimerReset className="size-3" /> Timed
+          </span>
+        ) : null}
+      </div>
+    </article>
   );
 }
 function State({ state }: { state: Service['state'] }) {

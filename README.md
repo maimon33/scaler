@@ -25,6 +25,7 @@ The design follows these rules:
 - run timezone-aware replica schedules;
 - scale EKS consumers from AWS SQS queue depth using IRSA or EKS Pod Identity;
 - record requested, accepted, scheduled, ready, timed-out, and failed operation stages;
+- set an event-retention period per scale job and purge expired events nightly;
 - show advisory recommendations and ownership-transfer plans for review.
 
 ### Suggested next features
@@ -140,3 +141,9 @@ Then visit <http://localhost:3000>.
 The current interface is still a mock frontend. This deployment creates and persists the production history schema and passes the database connection settings to the application. The next implementation step is the focused controller/API described above: native scale operations, ownership detection, schedules, and one SQS policy. It should not expose kube-proxy to the browser in production; the server should use its in-cluster service-account identity.
 
 The schema ConfigMap initializes a new database volume only. Future schema changes should be delivered as numbered migrations rather than editing an already-initialized database in place.
+
+### Per-job event retention
+
+Each schedule or scaling policy chooses an event-retention period. That value is copied to every operation created by the job, so changing a job affects new operations without silently rewriting the retention contract of previous attempts. The GUI shows the period on every operation and allows pending jobs to be edited.
+
+`operation_events` rows older than their parent operation's `retention_days` value are permanently deleted by the `scaler-retention` CronJob each night. The operation summary itself is retained for auditability. Existing databases must apply [`deploy/migrations/002-operation-event-retention.sql`](deploy/migrations/002-operation-event-retention.sql); editing the initialization ConfigMap alone does not migrate an existing volume.
