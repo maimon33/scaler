@@ -2,7 +2,32 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 import http from 'node:http';
 import process from 'node:process';
 import pg from 'pg';
+import {
+  ensureAwsRoleConfigSchema,
+  getAwsRoleConfig,
+  recordVerification,
+  saveAwsRoleArn,
+} from './aws-role-config.mjs';
 import { classifyOperation, criticalTitle } from './classify.mjs';
+import {
+  deleteDefinition,
+  ensureDefinitionsSchema,
+  listDefinitions,
+  normalizeDefinition,
+  recordPushEvent,
+  upsertDefinition,
+  ValidationError,
+} from './definitions.mjs';
+import { integerEnv } from './env.mjs';
+import { createLogger } from './log.mjs';
+import { readCallerIdentity } from './sources/sts.mjs';
+import {
+  buildStackParameters,
+  callerMatchesRole,
+  isValidRoleArn,
+  summarizeTriggerUsage,
+} from './trigger-role.mjs';
+import { TRIGGER_CATALOG } from './triggers.mjs';
 
 const { Pool } = pg;
 const port = integerEnv('EVENTS_PORT', 3001);
@@ -45,26 +70,10 @@ pool.on('error', (error) =>
   log('error', 'DATABASE_POOL_ERROR', { error: error.message }),
 );
 
-function integerEnv(name, fallback) {
-  const value = Number.parseInt(process.env[name] ?? '', 10);
-  return Number.isFinite(value) && value > 0 ? value : fallback;
-}
-
-function log(level, event, fields = {}) {
-  const critical = fields.critical === true;
-  const line = {
-    timestamp: new Date().toISOString(),
-    level: critical ? 'critical' : level,
-    event,
-    marker: critical ? criticalLogMarker : undefined,
-    emphasis: critical ? criticalLogEmphasis : undefined,
-    ...fields,
-  };
-  const output = JSON.stringify(line);
-  if (critical || level === 'error') console.error(output);
-  else if (level === 'warn') console.warn(output);
-  else console.log(output);
-}
+const log = createLogger({
+  criticalMarker: criticalLogMarker,
+  criticalEmphasis: criticalLogEmphasis,
+});
 
 function authorized(request) {
   if (!apiToken && process.env.NODE_ENV !== 'production') return true;
@@ -203,6 +212,8 @@ async function ensureSchema() {
   await pool.query(
     'CREATE INDEX IF NOT EXISTS operations_critical_started_idx ON operations (critical, started_at DESC)',
   );
+  await ensureDefinitionsSchema(pool);
+  await ensureAwsRoleConfigSchema(pool);
 }
 
 async function storeOperation(operation, classification) {
@@ -486,13 +497,184 @@ async function handleSlackTest(response) {
   send(response, 200, { delivered: true });
 }
 
+function handleTriggerCatalog(response) {
+  send(response, 200, { triggers: TRIGGER_CATALOG });
+}
+
+// Drives the Connections panel's "Create a trigger-reader role" flow: tells
+// the operator exactly which AWS reads their *currently configured*
+// triggers need, and the CloudFormation parameters that grant only that.
+async function handleTriggerUsage(request, response) {
+  const url = new URL(
+    request.url,
+    `http://${request.headers.host ?? 'localhost'}`,
+  );
+  const namespace = url.searchParams.get('namespace')?.trim() || 'scaler';
+  const serviceAccount =
+    url.searchParams.get('serviceAccount')?.trim() || 'scaler';
+  const definitions = await listDefinitions(pool, { enabledOnly: true });
+  const usage = summarizeTriggerUsage(definitions);
+  const stackParameters = buildStackParameters(usage, {
+    namespace,
+    serviceAccount,
+  });
+  send(response, 200, {
+    usage,
+    stackParameters,
+    template: 'deploy/cloudformation/trigger-role.yaml',
+  });
+}
+
+async function handleGetAwsRole(response) {
+  const config = await getAwsRoleConfig(pool);
+  send(response, 200, { role: config });
+}
+
+async function handleSaveAwsRole(request, response) {
+  const payload = await readJson(request);
+  const roleArn =
+    typeof payload.roleArn === 'string' ? payload.roleArn.trim() : '';
+  if (!isValidRoleArn(roleArn)) {
+    throw new HttpError(
+      400,
+      'roleArn must be a valid IAM role ARN (arn:aws:iam::<account>:role/<name>)',
+    );
+  }
+  const saved = await saveAwsRoleArn(pool, roleArn);
+  log('info', 'AWS_ROLE_SAVED', { role_arn: roleArn });
+  send(response, 200, { role: saved });
+}
+
+// Verifies a candidate role ARN the operator is considering — before or
+// after attaching it to the ServiceAccount — by checking whether the events
+// API's own live AWS identity (its default credential chain: IRSA, node
+// role, or static keys per AWS_CREDENTIAL_MODE) is already running as that
+// role. Only persists the result when the tested ARN matches what's already
+// saved; testing a not-yet-committed candidate never overwrites the saved
+// config.
+async function handleTestAwsRole(request, response) {
+  const payload = await readJson(request);
+  const roleArn =
+    typeof payload.roleArn === 'string' ? payload.roleArn.trim() : '';
+  if (!isValidRoleArn(roleArn)) {
+    throw new HttpError(
+      400,
+      'roleArn must be a valid IAM role ARN (arn:aws:iam::<account>:role/<name>)',
+    );
+  }
+
+  let callerArn = null;
+  let error = null;
+  try {
+    const identity = await readCallerIdentity();
+    callerArn = identity.arn;
+  } catch (err) {
+    error = err.message;
+  }
+
+  const matched = callerArn ? callerMatchesRole(callerArn, roleArn) : false;
+  const message = error
+    ? `Could not determine the server's AWS identity: ${error}`
+    : matched
+      ? 'Scaler is currently running as this role.'
+      : `Scaler is currently running as a different identity (${callerArn ?? 'unknown'}). Attach this role's ARN to the ServiceAccount annotation and restart the pod, then test again.`;
+
+  const saved = await getAwsRoleConfig(pool);
+  let persisted = null;
+  if (saved?.role_arn === roleArn) {
+    persisted = await recordVerification(pool, roleArn, {
+      verified: matched,
+      identity: callerArn,
+    });
+  }
+
+  log(matched ? 'info' : 'warn', 'AWS_ROLE_TESTED', {
+    role_arn: roleArn,
+    caller_arn: callerArn,
+    matched,
+    error,
+  });
+  send(response, 200, {
+    testedRoleArn: roleArn,
+    callerIdentityArn: callerArn,
+    matched,
+    message,
+    saved: persisted,
+  });
+}
+
+async function handleListDefinitions(response) {
+  const definitions = await listDefinitions(pool);
+  send(response, 200, { definitions });
+}
+
+async function handleCreateDefinition(request, response) {
+  const payload = await readJson(request);
+  let definition;
+  try {
+    definition = normalizeDefinition(payload);
+  } catch (error) {
+    if (error instanceof ValidationError)
+      throw new HttpError(400, error.problems.join('; '));
+    throw error;
+  }
+  const stored = await upsertDefinition(pool, definition);
+  log('info', 'DEFINITION_SAVED', {
+    namespace: stored.namespace,
+    name: stored.name,
+    source_type: stored.source_type,
+  });
+  send(response, 201, { definition: stored });
+}
+
+async function handleDeleteDefinition(response, params) {
+  const deleted = await deleteDefinition(pool, params.namespace, params.name);
+  if (!deleted) throw new HttpError(404, 'definition_not_found');
+  send(response, 200, { deleted: true });
+}
+
+// Lets an EventBridge rule (e.g. on S3 "Object Created") or any other push
+// source nudge a definition's demand without Scaler having to poll it.
+async function handlePushWebhook(response, params) {
+  const definitions = await listDefinitions(pool);
+  const definition = definitions.find(
+    (item) => item.namespace === params.namespace && item.name === params.name,
+  );
+  if (!definition) throw new HttpError(404, 'definition_not_found');
+  if (TRIGGER_CATALOG[definition.source_type]?.mode !== 'push') {
+    throw new HttpError(409, 'definition_is_not_a_push_trigger');
+  }
+  await recordPushEvent(pool, definition.id);
+  log('info', 'PUSH_EVENT_RECORDED', {
+    namespace: definition.namespace,
+    name: definition.name,
+    source_type: definition.source_type,
+  });
+  send(response, 202, { recorded: true });
+}
+
+/** Matches a simple `/:param` route pattern against a request pathname. */
+function matchPath(pattern, pathname) {
+  const patternParts = pattern.split('/').filter(Boolean);
+  const pathParts = pathname.split('/').filter(Boolean);
+  if (patternParts.length !== pathParts.length) return null;
+  const params = {};
+  for (let index = 0; index < patternParts.length; index += 1) {
+    const part = patternParts[index];
+    if (part.startsWith(':'))
+      params[part.slice(1)] = decodeURIComponent(pathParts[index]);
+    else if (part !== pathParts[index]) return null;
+  }
+  return params;
+}
+
 const server = http.createServer(async (request, response) => {
   try {
     if (request.method === 'OPTIONS' && allowedOrigin) {
       response.writeHead(204, {
         ...responseHeaders(),
         'access-control-allow-headers': 'authorization, content-type',
-        'access-control-allow-methods': 'GET, POST, OPTIONS',
+        'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS',
       });
       response.end();
       return;
@@ -519,6 +701,35 @@ const server = http.createServer(async (request, response) => {
       request.url === '/v1/notifications/slack/test'
     )
       return await handleSlackTest(response);
+
+    const pathname = request.url?.split('?')[0] ?? '';
+    if (request.method === 'GET' && pathname === '/v1/triggers')
+      return handleTriggerCatalog(response);
+    if (request.method === 'GET' && pathname === '/v1/definitions')
+      return await handleListDefinitions(response);
+    if (request.method === 'POST' && pathname === '/v1/definitions')
+      return await handleCreateDefinition(request, response);
+    const definitionParams = matchPath(
+      '/v1/definitions/:namespace/:name',
+      pathname,
+    );
+    if (definitionParams && request.method === 'DELETE')
+      return await handleDeleteDefinition(response, definitionParams);
+    const webhookParams = matchPath(
+      '/v1/webhooks/push/:namespace/:name',
+      pathname,
+    );
+    if (webhookParams && request.method === 'POST')
+      return await handlePushWebhook(response, webhookParams);
+    if (request.method === 'GET' && pathname === '/v1/aws/trigger-usage')
+      return await handleTriggerUsage(request, response);
+    if (request.method === 'GET' && pathname === '/v1/aws/role')
+      return await handleGetAwsRole(response);
+    if (request.method === 'PUT' && pathname === '/v1/aws/role')
+      return await handleSaveAwsRole(request, response);
+    if (request.method === 'POST' && pathname === '/v1/aws/role/test')
+      return await handleTestAwsRole(request, response);
+
     send(response, 404, { error: 'not_found' });
   } catch (error) {
     const status = error instanceof HttpError ? error.status : 500;

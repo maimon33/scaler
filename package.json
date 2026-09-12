@@ -8,13 +8,19 @@
   "scripts": {
     "dev": "vinext dev",
     "events": "node controller/server.mjs",
-    "test:controller": "node --test controller/*.test.mjs",
+    "reconcile": "node controller/reconciler.mjs",
+    "test:controller": "node --test controller",
+    "db:backup": "scripts/db-backup.sh",
+    "db:restore": "scripts/db-restore.sh",
     "build": "vinext build",
     "start": "wrangler dev --config dist/server/wrangler.json",
     "lint": "oxlint",
     "format": "oxfmt"
   },
   "dependencies": {
+    "@aws-sdk/client-cloudwatch": "^3.1131.0",
+    "@aws-sdk/client-sqs": "^3.1131.0",
+    "@aws-sdk/client-sts": "^3.1131.0",
     "@base-ui/react": "1.7.0",
     "@shadcn/react": "0.3.0",
     "class-variance-authority": "0.7.1",
