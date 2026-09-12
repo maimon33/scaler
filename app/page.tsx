@@ -20,206 +20,102 @@ import {
   Lock,
   Pencil,
   MoreHorizontal,
-  Pause,
-  Play,
   Plus,
   Radio,
-  RotateCcw,
   Search,
   Settings2,
   ShieldCheck,
   Sparkles,
-  TimerReset,
-  Undo2,
   Workflow,
   X,
   Zap,
 } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Checkbox } from '@/components/ui/checkbox';
+import {
+  DefinitionBox,
+  FieldLabel,
+  FlowArrow,
+  FlowNode,
+  ReviewRow,
+} from '@/components/scaler/DefinitionForm';
+import { FeatureSuggestion } from '@/components/scaler/FeatureSuggestion';
+import { GuideStep } from '@/components/scaler/GuideStep';
+import { Metric } from '@/components/scaler/Metric';
+import { OperationRow } from '@/components/scaler/OperationRow';
+import { Schedule } from '@/components/scaler/Schedule';
+import { Owner, State } from '@/components/scaler/StatusBadges';
+import { TriggerPicker } from '@/components/scaler/TriggerPicker';
+import { TriggerRolePanel } from '@/components/scaler/TriggerRolePanel';
+import { initialOperations, initialServices, nav } from '@/lib/demo-data';
+import { defaultFieldValues, getTrigger } from '@/lib/triggers';
+import type {
+  Operation,
+  Service,
+  TriggerFieldValues,
+  TriggerTypeId,
+} from '@/lib/types';
 
-type Service = {
+function buildDefinitionYaml({
+  name,
+  namespace,
+  targetName,
+  minimum,
+  maximum,
+  headroomEnabled,
+  headroomType,
+  headroomValue,
+  triggerType,
+  triggerValues,
+}: {
   name: string;
   namespace: string;
-  current: number;
-  desired: number;
-  min: number;
-  max: number;
-  trigger: string;
-  owner: 'Scaler' | 'Native HPA' | 'Unmanaged';
-  latency: string;
-  state: 'Stable' | 'Scaling' | 'Paused';
-};
-
-type Operation = {
-  id: string;
-  workload: string;
-  namespace: string;
-  kind: 'Scale' | 'Schedule' | 'Revert';
-  from: number;
-  to: number;
-  status: 'Running' | 'Succeeded' | 'Timed out' | 'Scheduled';
-  elapsedSeconds: number;
-  timeoutSeconds: number;
-  actor: string;
-  retentionDays: number;
-  editable: boolean;
-  reversible: boolean;
-  critical?: boolean;
-  criticalReasons?: string[];
-  notificationStatus?: 'Sent' | 'Suppressed' | 'Disabled' | 'None';
-};
-
-const initialServices: Service[] = [
-  {
-    name: 'checkout-api',
-    namespace: 'production',
-    current: 12,
-    desired: 12,
-    min: 4,
-    max: 40,
-    trigger: 'CPU · 61%',
-    owner: 'Native HPA',
-    latency: '1.8s',
-    state: 'Stable',
-  },
-  {
-    name: 'events-worker',
-    namespace: 'production',
-    current: 18,
-    desired: 24,
-    min: 2,
-    max: 80,
-    trigger: 'SQS · 8.2k',
-    owner: 'Scaler',
-    latency: '2.4s',
-    state: 'Scaling',
-  },
-  {
-    name: 'recommendations',
-    namespace: 'production',
-    current: 8,
-    desired: 8,
-    min: 3,
-    max: 24,
-    trigger: 'RPS · 1.4k',
-    owner: 'Native HPA',
-    latency: '1.2s',
-    state: 'Stable',
-  },
-  {
-    name: 'pdf-renderer',
-    namespace: 'jobs',
-    current: 0,
-    desired: 0,
-    min: 0,
-    max: 30,
-    trigger: 'Schedule',
-    owner: 'Scaler',
-    latency: '—',
-    state: 'Paused',
-  },
-];
-
-const initialOperations: Operation[] = [
-  {
-    id: 'op-0142',
-    workload: 'events-worker',
-    namespace: 'production',
-    kind: 'Scale',
-    from: 18,
-    to: 24,
-    status: 'Running',
-    elapsedSeconds: 7,
-    timeoutSeconds: 30,
-    actor: 'SQS policy',
-    retentionDays: 30,
-    editable: false,
-    reversible: false,
-  },
-  {
-    id: 'op-0141',
-    workload: 'pdf-renderer',
-    namespace: 'jobs',
-    kind: 'Scale',
-    from: 0,
-    to: 8,
-    status: 'Succeeded',
-    elapsedSeconds: 3,
-    timeoutSeconds: 10,
-    actor: 'AM',
-    retentionDays: 90,
-    editable: false,
-    reversible: true,
-  },
-  {
-    id: 'op-0140',
-    workload: 'events-worker',
-    namespace: 'production',
-    kind: 'Scale',
-    from: 18,
-    to: 36,
-    status: 'Timed out',
-    elapsedSeconds: 10,
-    timeoutSeconds: 10,
-    actor: 'Schedule',
-    retentionDays: 14,
-    editable: false,
-    reversible: false,
-    critical: true,
-    criticalReasons: ['SCALE_UP_TIMED_OUT'],
-    notificationStatus: 'Sent',
-  },
-  {
-    id: 'op-0139',
-    workload: 'pdf-renderer',
-    namespace: 'jobs',
-    kind: 'Schedule',
-    from: 8,
-    to: 0,
-    status: 'Scheduled',
-    elapsedSeconds: 0,
-    timeoutSeconds: 10,
-    actor: 'Schedule · 23:30',
-    retentionDays: 30,
-    editable: true,
-    reversible: false,
-  },
-];
-
-const nav = [
-  'Overview',
-  'Definitions',
-  'Workloads',
-  'Schedules',
-  'Operations',
-  'Connections',
-];
-
-const starterYaml = `apiVersion: scaler.io/v1alpha1
-kind: Scaler
-metadata:
-  name: events-worker-sqs
-  namespace: production
-spec:
-  targetRef:
-    kind: Deployment
-    name: events-worker
-  replicas:
-    min: 2
-    max: 80
-    headroom:
-      type: percent
-      value: 20
-  source:
-    type: aws-sqs
-    queueURL: https://sqs.us-east-1.amazonaws.com/123456789012/events
-    targetMessagesPerReplica: 50
-  behavior:
-    pollEvery: 5s
-    onSourceFailure:
-      strategy: floor
-      replicas: 6`;
+  targetName: string;
+  minimum: number;
+  maximum: number;
+  headroomEnabled: boolean;
+  headroomType: string;
+  headroomValue: number;
+  triggerType: TriggerTypeId;
+  triggerValues: TriggerFieldValues;
+}) {
+  const trigger = getTrigger(triggerType);
+  const lines = [
+    'apiVersion: scaler.io/v1alpha1',
+    'kind: Scaler',
+    'metadata:',
+    `  name: ${name || 'untitled-scaler'}`,
+    `  namespace: ${namespace}`,
+    'spec:',
+    '  targetRef:',
+    '    kind: Deployment',
+    `    name: ${targetName}`,
+    '  replicas:',
+    `    min: ${minimum}`,
+    `    max: ${maximum}`,
+  ];
+  if (headroomEnabled) {
+    lines.push(
+      '    headroom:',
+      `      type: ${headroomType === 'Percent' ? 'percent' : 'replicas'}`,
+      `      value: ${headroomValue}`,
+    );
+  }
+  lines.push(
+    '  source:',
+    ...trigger.yamlLines(triggerValues).map((line) => `    ${line}`),
+  );
+  if (trigger.mode === 'poll') {
+    lines.push(
+      '  behavior:',
+      '    pollEvery: 5s',
+      '    onSourceFailure:',
+      '      strategy: floor',
+      '      replicas: 6',
+    );
+  }
+  return lines.join('\n');
+}
 
 export default function Home() {
   const [services, setServices] = useState(initialServices);
@@ -233,14 +129,18 @@ export default function Home() {
   const [definitionOpen, setDefinitionOpen] = useState(false);
   const [definitionMode, setDefinitionMode] = useState('guided');
   const [definitionName, setDefinitionName] = useState('events-worker-sqs');
+  const [definitionNamespace, setDefinitionNamespace] = useState('production');
   const [targetName, setTargetName] = useState('events-worker');
-  const [sourceType, setSourceType] = useState('AWS SQS');
+  const [triggerType, setTriggerType] = useState<TriggerTypeId>('aws-sqs');
+  const [triggerValues, setTriggerValues] = useState<TriggerFieldValues>(() =>
+    defaultFieldValues(getTrigger('aws-sqs')),
+  );
   const [minimum, setMinimum] = useState(2);
   const [maximum, setMaximum] = useState(80);
   const [headroomEnabled, setHeadroomEnabled] = useState(true);
   const [headroomType, setHeadroomType] = useState('Percent');
   const [headroomValue, setHeadroomValue] = useState(20);
-  const [yaml, setYaml] = useState(starterYaml);
+  const [yamlOverride, setYamlOverride] = useState<string | null>(null);
   const [editTarget, setEditTarget] = useState<Operation | null>(null);
   const [editReplicas, setEditReplicas] = useState(0);
   const [editTimeout, setEditTimeout] = useState(10);
@@ -253,6 +153,46 @@ export default function Home() {
       ),
     [services, query],
   );
+
+  const selectedTrigger = getTrigger(triggerType);
+  const generatedYaml = useMemo(
+    () =>
+      buildDefinitionYaml({
+        name: definitionName,
+        namespace: definitionNamespace,
+        targetName,
+        minimum,
+        maximum,
+        headroomEnabled,
+        headroomType,
+        headroomValue,
+        triggerType,
+        triggerValues,
+      }),
+    [
+      definitionName,
+      definitionNamespace,
+      targetName,
+      minimum,
+      maximum,
+      headroomEnabled,
+      headroomType,
+      headroomValue,
+      triggerType,
+      triggerValues,
+    ],
+  );
+  const yaml = yamlOverride ?? generatedYaml;
+
+  function selectTrigger(id: TriggerTypeId) {
+    setTriggerType(id);
+    setTriggerValues(defaultFieldValues(getTrigger(id)));
+    setYamlOverride(null);
+  }
+  function changeTriggerField(key: string, value: string | number) {
+    setTriggerValues((current) => ({ ...current, [key]: value }));
+    setYamlOverride(null);
+  }
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -1009,7 +949,10 @@ export default function Home() {
                         <FieldLabel label="Namespace">
                           <select
                             className="definition-input"
-                            defaultValue="production"
+                            value={definitionNamespace}
+                            onChange={(event) =>
+                              setDefinitionNamespace(event.target.value)
+                            }
                           >
                             <option>production</option>
                             <option>jobs</option>
@@ -1051,32 +994,12 @@ export default function Home() {
                         description="What should drive replica demand."
                         complete
                       >
-                        <FieldLabel label="Source">
-                          <select
-                            className="definition-input"
-                            value={sourceType}
-                            onChange={(event) =>
-                              setSourceType(event.target.value)
-                            }
-                          >
-                            <option>AWS SQS</option>
-                            <option>Schedule</option>
-                            <option>Manual only</option>
-                          </select>
-                        </FieldLabel>
-                        <FieldLabel label="Messages / replica">
-                          <input
-                            type="number"
-                            defaultValue="50"
-                            className="definition-input"
-                          />
-                        </FieldLabel>
-                        <FieldLabel label="Queue URL" wide>
-                          <input
-                            defaultValue="https://sqs.us-east-1.amazonaws.com/123456789012/events"
-                            className="definition-input font-mono text-[11px]"
-                          />
-                        </FieldLabel>
+                        <TriggerPicker
+                          selected={triggerType}
+                          onSelect={selectTrigger}
+                          values={triggerValues}
+                          onChangeField={changeTriggerField}
+                        />
                       </DefinitionBox>
                       <DefinitionBox
                         step="04"
@@ -1118,7 +1041,8 @@ export default function Home() {
                               Add headroom
                             </span>
                             <span className="mt-0.5 block text-[10px] leading-4 text-[#748078]">
-                              Keep spare capacity above calculated demand, without exceeding the maximum.
+                              Keep spare capacity above calculated demand,
+                              without exceeding the maximum.
                             </span>
                           </span>
                         </label>
@@ -1128,21 +1052,29 @@ export default function Home() {
                               <select
                                 className="definition-input"
                                 value={headroomType}
-                                onChange={(event) => setHeadroomType(event.target.value)}
+                                onChange={(event) =>
+                                  setHeadroomType(event.target.value)
+                                }
                               >
                                 <option>Percent</option>
                                 <option>Fixed replicas</option>
                               </select>
                             </FieldLabel>
                             <FieldLabel
-                              label={headroomType === 'Percent' ? 'Extra capacity (%)' : 'Extra replicas'}
+                              label={
+                                headroomType === 'Percent'
+                                  ? 'Extra capacity (%)'
+                                  : 'Extra replicas'
+                              }
                             >
                               <input
                                 type="number"
                                 min="1"
                                 value={headroomValue}
                                 onChange={(event) =>
-                                  setHeadroomValue(Math.max(1, Number(event.target.value)))
+                                  setHeadroomValue(
+                                    Math.max(1, Number(event.target.value)),
+                                  )
                                 }
                                 className="definition-input"
                               />
@@ -1183,22 +1115,22 @@ export default function Home() {
                     <div className="overflow-x-auto rounded-xl border border-[#d7ddd8] bg-[radial-gradient(#ccd5ce_1px,transparent_1px)] [background-size:18px_18px]">
                       <div className="flex min-h-[470px] min-w-[820px] items-center justify-center gap-3 p-8">
                         <FlowNode
-                          icon={<Radio />}
+                          icon={<selectedTrigger.icon />}
                           eyebrow="When"
-                          title={sourceType}
-                          lines={['Queue: events', 'Every 5 seconds']}
+                          title={selectedTrigger.label}
+                          lines={selectedTrigger.flowLines(triggerValues)}
                           active
                         />
                         <FlowArrow label="observe" />
                         <FlowNode
                           icon={<Gauge />}
                           eyebrow="Calculate"
-                          title="Queue demand"
+                          title="Replica demand"
                           lines={[
-                            '50 messages / replica',
                             headroomEnabled
                               ? `Add ${headroomValue}${headroomType === 'Percent' ? '%' : ' replicas'} headroom`
                               : 'No headroom',
+                            `Clamp to ${minimum}–${maximum}`,
                           ]}
                         />
                         <FlowArrow label="bound" />
@@ -1214,9 +1146,17 @@ export default function Home() {
                       <span className="font-semibold text-[#3e5147]">
                         Safety branch:
                       </span>
-                      <span className="rounded-full border border-[#dfcfb6] bg-[#fff8ec] px-2.5 py-1 text-[#805b2c]">
-                        Source unavailable → floor 6
-                      </span>
+                      {selectedTrigger.mode === 'poll' ? (
+                        <span className="rounded-full border border-[#dfcfb6] bg-[#fff8ec] px-2.5 py-1 text-[#805b2c]">
+                          Source unavailable → floor 6
+                        </span>
+                      ) : (
+                        <span className="rounded-full border border-[#dfcfb6] bg-[#fff8ec] px-2.5 py-1 text-[#805b2c]">
+                          {selectedTrigger.mode === 'push'
+                            ? `No events for ${triggerValues.decaySeconds}s → back to ${minimum}`
+                            : `Hold current replicas on error`}
+                        </span>
+                      )}
                       <span className="rounded-full border border-[#cfded4] bg-[#eff7f1] px-2.5 py-1 text-[#35664d]">
                         Ownership checked before write
                       </span>
@@ -1231,31 +1171,47 @@ export default function Home() {
                         </h3>
                         <p className="mt-1 text-sm text-[#6f7c74]">
                           Use the same declarative format in GitOps, CI, or this
-                          editor.
+                          editor. Generated live from the Guided tab until you
+                          edit it directly.
                         </p>
                       </div>
-                      <button
-                        onClick={() => {
-                          void navigator.clipboard?.writeText(yaml);
-                          notify('YAML copied to clipboard');
-                        }}
-                        className="flex w-fit items-center gap-1.5 rounded-lg border border-[#d4dbd5] bg-white px-3 py-2 text-xs font-semibold"
-                      >
-                        <Copy className="size-3.5" /> Copy YAML
-                      </button>
+                      <div className="flex w-fit gap-2">
+                        {yamlOverride !== null ? (
+                          <button
+                            onClick={() => setYamlOverride(null)}
+                            className="rounded-lg border border-[#d4dbd5] bg-white px-3 py-2 text-xs font-semibold"
+                          >
+                            Reset to guided
+                          </button>
+                        ) : null}
+                        <button
+                          onClick={() => {
+                            void navigator.clipboard?.writeText(yaml);
+                            notify('YAML copied to clipboard');
+                          }}
+                          className="flex items-center gap-1.5 rounded-lg border border-[#d4dbd5] bg-white px-3 py-2 text-xs font-semibold"
+                        >
+                          <Copy className="size-3.5" /> Copy YAML
+                        </button>
+                      </div>
                     </div>
                     <div className="overflow-hidden rounded-xl border border-[#243a31] bg-[#14221c] shadow-sm">
                       <div className="flex items-center justify-between border-b border-white/10 px-4 py-2.5 text-[10px] font-semibold text-[#adc0b5]">
                         <span className="font-mono">scaler.yaml</span>
                         <span className="flex items-center gap-1.5 text-[#8ed3aa]">
-                          <Check className="size-3" /> Valid
+                          <Check className="size-3" />
+                          {yamlOverride !== null
+                            ? 'Edited'
+                            : 'Valid · synced with Guided'}
                         </span>
                       </div>
                       <textarea
                         aria-label="Scaler YAML definition"
                         spellCheck={false}
                         value={yaml}
-                        onChange={(event) => setYaml(event.target.value)}
+                        onChange={(event) =>
+                          setYamlOverride(event.target.value)
+                        }
                         className="min-h-[480px] w-full resize-none bg-transparent p-4 font-mono text-[12px] leading-6 text-[#d9e8df] outline-none"
                       />
                     </div>
@@ -1278,7 +1234,7 @@ export default function Home() {
                         label="Target"
                         value={`Deployment / ${targetName}`}
                       />
-                      <ReviewRow label="Source" value={sourceType} />
+                      <ReviewRow label="Source" value={selectedTrigger.label} />
                       <ReviewRow
                         label="Range"
                         value={`${minimum}–${maximum} replicas`}
@@ -1293,7 +1249,14 @@ export default function Home() {
                             : 'None'
                         }
                       />
-                      <ReviewRow label="Failure" value="Floor at 6" />
+                      <ReviewRow
+                        label="Failure"
+                        value={
+                          selectedTrigger.mode === 'poll'
+                            ? 'Floor at 6'
+                            : 'Not applicable'
+                        }
+                      />
                     </dl>
                     <div className="mt-4 rounded-xl border border-[#cfe0d5] bg-[#edf7f0] p-3.5">
                       <div className="flex items-center gap-2 text-xs font-semibold text-[#315e48]">
@@ -1589,7 +1552,7 @@ export default function Home() {
             e.target === e.currentTarget && setGuideOpen(false)
           }
         >
-          <aside className="h-full w-full max-w-lg overflow-y-auto bg-[#fbfcfa] p-6 shadow-2xl">
+          <aside className="h-full w-full max-w-2xl overflow-y-auto bg-[#fbfcfa] p-6 shadow-2xl">
             <div className="flex items-start justify-between">
               <div>
                 <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.1em] text-[#718078]">
@@ -1638,6 +1601,9 @@ export default function Home() {
                 code={'AWS_ACCESS_KEY_ID=…\nAWS_SECRET_ACCESS_KEY=…'}
               />
             </div>
+            <div className="mt-6">
+              <TriggerRolePanel onAction={notify} />
+            </div>
             <div className="mt-6 rounded-xl border border-[#cfe0d5] bg-[#edf7f0] p-4 text-xs leading-5 text-[#315e48]">
               <strong>Least privilege:</strong> grant only the AWS actions used
               by your trigger sources. Scope Kubernetes RBAC to intended
@@ -1655,423 +1621,5 @@ export default function Home() {
         </output>
       )}
     </main>
-  );
-}
-
-function Metric({
-  label,
-  value,
-  detail,
-  icon,
-  amber,
-}: {
-  label: string;
-  value: string;
-  detail: string;
-  icon: React.ReactNode;
-  amber?: boolean;
-}) {
-  return (
-    <div className="rounded-xl border border-[#d9dfda] bg-white p-4">
-      <div className="flex items-center justify-between">
-        <span className="text-xs font-medium text-[#718078]">{label}</span>
-        <span
-          className={`grid size-7 place-items-center rounded-lg ${amber ? 'bg-[#f8eddc] text-[#ad6a1e]' : 'bg-[#e4efe8] text-[#347454]'} [&>svg]:size-3.5`}
-        >
-          {icon}
-        </span>
-      </div>
-      <div className="mt-3 text-2xl font-semibold tracking-[-0.04em]">
-        {value}
-      </div>
-      <div className="mt-1 text-[11px] text-[#7b877f]">{detail}</div>
-    </div>
-  );
-}
-
-function DefinitionBox({
-  step,
-  title,
-  description,
-  complete,
-  children,
-}: {
-  step: string;
-  title: string;
-  description: string;
-  complete?: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="rounded-xl border border-[#d7ddd8] bg-white p-4 shadow-[0_1px_2px_rgba(20,40,30,.03)] sm:p-5">
-      <div className="flex items-start gap-3">
-        <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-[#e4eee7] font-mono text-[10px] font-bold text-[#35634c]">
-          {step}
-        </span>
-        <div>
-          <h4 className="text-sm font-semibold">{title}</h4>
-          <p className="mt-0.5 text-[11px] text-[#7a867e]">{description}</p>
-        </div>
-        {complete ? (
-          <span className="ml-auto grid size-5 place-items-center rounded-full bg-[#dff1e5] text-[#2e7452]">
-            <Check className="size-3" />
-          </span>
-        ) : null}
-      </div>
-      <div className="mt-4 grid gap-3 sm:grid-cols-2">{children}</div>
-    </section>
-  );
-}
-
-function FieldLabel({
-  label,
-  wide,
-  children,
-}: {
-  label: string;
-  wide?: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <label
-      className={`block text-[11px] font-semibold text-[#5b6961] ${wide ? 'sm:col-span-2' : ''}`}
-    >
-      {label}
-      {children}
-    </label>
-  );
-}
-
-function FlowNode({
-  icon,
-  eyebrow,
-  title,
-  lines,
-  active,
-}: {
-  icon: React.ReactNode;
-  eyebrow: string;
-  title: string;
-  lines: string[];
-  active?: boolean;
-}) {
-  return (
-    <button
-      className={`w-52 shrink-0 rounded-xl border bg-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${active ? 'border-[#5e9478] ring-2 ring-[#dcece2]' : 'border-[#d2dad4]'}`}
-    >
-      <span className="grid size-8 place-items-center rounded-lg bg-[#e4eee7] text-[#35634c] [&>svg]:size-4">
-        {icon}
-      </span>
-      <span className="mt-4 block text-[9px] font-bold uppercase tracking-[0.12em] text-[#7b877f]">
-        {eyebrow}
-      </span>
-      <strong className="mt-1 block truncate text-sm">{title}</strong>
-      <span className="mt-3 block space-y-1 border-t border-[#e4e8e4] pt-3">
-        {lines.map((line) => (
-          <span key={line} className="block text-[11px] text-[#6d7a72]">
-            {line}
-          </span>
-        ))}
-      </span>
-    </button>
-  );
-}
-
-function FlowArrow({ label }: { label: string }) {
-  return (
-    <div className="flex w-16 shrink-0 flex-col items-center gap-1 text-[9px] font-semibold text-[#819087]">
-      <span>{label}</span>
-      <span className="flex w-full items-center">
-        <span className="h-px flex-1 bg-[#9cac9f]" />
-        <ArrowRight className="-ml-1 size-3.5" />
-      </span>
-    </div>
-  );
-}
-
-function ReviewRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="py-3">
-      <dt className="text-[10px] font-semibold uppercase tracking-wide text-[#89938d]">
-        {label}
-      </dt>
-      <dd className="mt-1 break-words text-xs font-semibold text-[#35453c]">
-        {value}
-      </dd>
-    </div>
-  );
-}
-
-function OperationRow({
-  operation,
-  onEdit,
-  onRerun,
-  onRevert,
-}: {
-  operation: Operation;
-  onEdit: (operation: Operation) => void;
-  onRerun: (operation: Operation) => void;
-  onRevert: (operation: Operation) => void;
-}) {
-  const running = operation.status === 'Running';
-  const critical = operation.critical === true;
-  const progress = Math.min(
-    100,
-    (operation.elapsedSeconds / operation.timeoutSeconds) * 100,
-  );
-  const statusStyle =
-    operation.status === 'Succeeded'
-      ? 'bg-[#e4f3e9] text-[#28704e]'
-      : operation.status === 'Running'
-        ? 'bg-[#e6eff7] text-[#326c91]'
-        : operation.status === 'Timed out'
-          ? 'bg-[#fee8e7] text-[#a33f39]'
-          : 'bg-[#eceeeb] text-[#69736d]';
-  return (
-    <article
-      data-operation-id={operation.id}
-      className={`grid gap-4 border-l-[3px] px-5 py-4 lg:grid-cols-[minmax(210px,1.2fr)_minmax(180px,.8fr)_minmax(170px,.7fr)_auto] lg:items-center ${critical ? 'border-l-[#c94b43] bg-[#fff9f8]' : 'border-l-transparent'}`}
-    >
-      <div className="min-w-0">
-        <div className="flex flex-wrap items-center gap-2">
-          <span
-            className={`inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-[10px] font-bold ${statusStyle}`}
-          >
-            {running ? <Activity className="size-3" /> : null}
-            {operation.status}
-          </span>
-          {operation.reversible ? (
-            <span className="inline-flex items-center gap-1 rounded-full border border-[#cfe0d5] bg-[#f4faf6] px-2 py-1 text-[10px] font-bold text-[#3c6f55]">
-              <Undo2 className="size-2.5" /> Reversible
-            </span>
-          ) : null}
-          {critical ? (
-            <span className="inline-flex items-center gap-1 rounded-full bg-[#c94b43] px-2 py-1 text-[10px] font-bold text-white">
-              <AlertTriangle className="size-2.5" /> Critical
-            </span>
-          ) : null}
-          {operation.notificationStatus === 'Sent' ? (
-            <span className="inline-flex items-center gap-1 rounded-full border border-[#d8c9e8] bg-[#f8f2ff] px-2 py-1 text-[10px] font-bold text-[#654390]">
-              <Radio className="size-2.5" /> Slack sent
-            </span>
-          ) : null}
-          <span className="font-mono text-[10px] text-[#8a958e]">
-            {operation.id}
-          </span>
-        </div>
-        <div className="mt-2 truncate text-sm font-semibold text-[#26342d]">
-          {operation.kind} · {operation.workload}
-        </div>
-        <div className="mt-0.5 text-[11px] text-[#7d8981]">
-          {operation.namespace} · {operation.actor}
-        </div>
-        {critical && operation.criticalReasons?.length ? (
-          <div className="mt-1.5 font-mono text-[9px] font-bold tracking-wide text-[#a33f39]">
-            {operation.criticalReasons.join(' · ')}
-          </div>
-        ) : null}
-      </div>
-      <div>
-        <div className="text-xs font-semibold text-[#59685f]">
-          {operation.from} → {operation.to} replicas
-        </div>
-        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[#e6eae7]">
-          <div
-            className={`h-full rounded-full transition-[width] ${critical ? 'bg-[#cf5b53]' : 'bg-[#4b9270]'}`}
-            style={{ width: `${running ? Math.max(5, progress) : 100}%` }}
-          />
-        </div>
-        <div className="mt-1.5 flex justify-between font-mono text-[10px] text-[#7c8981]">
-          <span>
-            {operation.status === 'Scheduled'
-              ? 'Starts 23:30'
-              : `${operation.elapsedSeconds}s elapsed`}
-          </span>
-          <span>{operation.timeoutSeconds}s limit</span>
-        </div>
-      </div>
-      <div className="flex items-start gap-2 text-xs text-[#68766e]">
-        <History className="mt-0.5 size-3.5 shrink-0" />
-        <div>
-          <div className="font-semibold text-[#4e5f55]">
-            Retain {operation.retentionDays} days
-          </div>
-          <div className="mt-0.5 text-[10px] leading-4 text-[#849087]">
-            Older events purge nightly
-          </div>
-        </div>
-      </div>
-      <div className="flex flex-wrap justify-start gap-2 lg:justify-end">
-        {operation.editable ? (
-          <button
-            onClick={() => onEdit(operation)}
-            className="inline-flex items-center gap-1.5 rounded-md border border-[#d5ddd6] bg-white px-2.5 py-1.5 text-xs font-semibold shadow-sm"
-          >
-            <Pencil className="size-3" /> Edit
-          </button>
-        ) : null}
-        {operation.status === 'Succeeded' ||
-        operation.status === 'Timed out' ? (
-          <button
-            onClick={() => onRerun(operation)}
-            className="inline-flex items-center gap-1.5 rounded-md border border-[#d5ddd6] bg-white px-2.5 py-1.5 text-xs font-semibold shadow-sm"
-          >
-            <RotateCcw className="size-3" /> Re-run
-          </button>
-        ) : null}
-        {operation.reversible && operation.status === 'Succeeded' ? (
-          <button
-            onClick={() => onRevert(operation)}
-            className="inline-flex items-center gap-1.5 rounded-md border border-[#d8c8ad] bg-[#fffaf1] px-2.5 py-1.5 text-xs font-semibold text-[#81571f] shadow-sm"
-          >
-            <Undo2 className="size-3" /> Revert
-          </button>
-        ) : null}
-        {running ? (
-          <span className="inline-flex items-center gap-1.5 px-1 text-[10px] font-semibold text-[#6f7d75]">
-            <TimerReset className="size-3" /> Timed
-          </span>
-        ) : null}
-      </div>
-    </article>
-  );
-}
-function State({ state }: { state: Service['state'] }) {
-  const style =
-    state === 'Stable'
-      ? 'bg-[#e4f3e9] text-[#28704e]'
-      : state === 'Scaling'
-        ? 'bg-[#e6eff7] text-[#326c91]'
-        : 'bg-[#eceeeb] text-[#69736d]';
-  return (
-    <span
-      className={`inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-[10px] font-bold ${style}`}
-    >
-      {state === 'Scaling' ? (
-        <Activity className="size-3" />
-      ) : state === 'Paused' ? (
-        <Pause className="size-2.5" fill="currentColor" />
-      ) : (
-        <span className="size-1.5 rounded-full bg-current" />
-      )}
-      {state}
-    </span>
-  );
-}
-function Owner({ owner }: { owner: Service['owner'] }) {
-  const protectedOwner = owner === 'Native HPA';
-  return (
-    <span
-      className={`inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-[10px] font-bold ${
-        protectedOwner
-          ? 'bg-[#fff4df] text-[#8b5b22]'
-          : owner === 'Scaler'
-            ? 'bg-[#e4f3e9] text-[#28704e]'
-            : 'bg-[#eceeeb] text-[#69736d]'
-      }`}
-    >
-      {protectedOwner ? <Lock className="size-2.5" /> : null}
-      {owner}
-    </span>
-  );
-}
-function FeatureSuggestion({
-  stage,
-  title,
-  copy,
-  icon,
-}: {
-  stage: string;
-  title: string;
-  copy: string;
-  icon: React.ReactNode;
-}) {
-  return (
-    <article className="rounded-lg border border-[#dfe4e0] bg-[#fafbf9] p-4">
-      <div className="flex items-center justify-between">
-        <span className="grid size-8 place-items-center rounded-lg bg-[#e4efe8] text-[#347454] [&>svg]:size-3.5">
-          {icon}
-        </span>
-        <span className="rounded-full bg-[#e8ece8] px-2 py-1 text-[9px] font-bold uppercase tracking-wide text-[#67736c]">
-          {stage}
-        </span>
-      </div>
-      <h3 className="mt-3 text-sm font-semibold">{title}</h3>
-      <p className="mt-1 text-xs leading-5 text-[#748078]">{copy}</p>
-    </article>
-  );
-}
-function Schedule({
-  time,
-  title,
-  meta,
-  active,
-}: {
-  time: string;
-  title: string;
-  meta: string;
-  active?: boolean;
-}) {
-  return (
-    <div className="flex items-center gap-3 rounded-lg border border-[#dfe4e0] bg-[#fafbf9] p-3">
-      <div className="font-mono text-sm font-bold text-[#315e49]">{time}</div>
-      <div className="min-w-0">
-        <div className="truncate text-xs font-semibold">{title}</div>
-        <div className="mt-0.5 truncate text-[10px] text-[#7c8981]">{meta}</div>
-      </div>
-      <span
-        className={`ml-auto grid size-6 place-items-center rounded-full ${active ? 'bg-[#e0f0e6] text-[#307354]' : 'bg-[#eceeec] text-[#7d8781]'}`}
-      >
-        {active ? (
-          <Play className="size-2.5" fill="currentColor" />
-        ) : (
-          <Pause className="size-2.5" fill="currentColor" />
-        )}
-      </span>
-    </div>
-  );
-}
-function GuideStep({
-  n,
-  title,
-  copy,
-  code,
-}: {
-  n: string;
-  title: string;
-  copy: string;
-  code: string;
-}) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <div className="rounded-xl border border-[#dbe1dc] bg-white p-4">
-      <div className="flex gap-3">
-        <span className="grid size-7 shrink-0 place-items-center rounded-full bg-[#183f34] text-xs font-bold text-white">
-          {n}
-        </span>
-        <div className="min-w-0 flex-1">
-          <h3 className="text-sm font-semibold">{title}</h3>
-          <p className="mt-1 text-xs leading-5 text-[#718078]">{copy}</p>
-          <div className="relative mt-3 whitespace-pre-wrap rounded-lg bg-[#17231e] p-3 pr-10 font-mono text-[10px] leading-5 text-[#d8e8df]">
-            {code}
-            <button
-              onClick={() => {
-                void navigator.clipboard?.writeText(code);
-                setCopied(true);
-                window.setTimeout(() => setCopied(false), 1200);
-              }}
-              className="absolute right-2 top-2 rounded p-1.5 text-[#a9bab0]"
-              aria-label="Copy command"
-            >
-              {copied ? (
-                <Check className="size-3.5" />
-              ) : (
-                <Copy className="size-3.5" />
-              )}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
   );
 }

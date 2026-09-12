@@ -1,4 +1,33 @@
 services:
+  # Local-only Postgres. Uses the same fresh-install schema as the Kubernetes
+  # deployment (deploy/db/001-schema.sql). Credentials below are placeholder
+  # local-dev defaults — override via a .env file (DATABASE_PASSWORD,
+  # SCALER_EVENTS_TOKEN) or environment variables; never reuse them anywhere
+  # reachable outside your machine. See "Local development database" in the
+  # README for backup/restore, and "Using Amazon RDS instead of in-cluster
+  # Postgres" if you'd rather point everything at a managed database instead
+  # of this container.
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: scaler
+      POSTGRES_USER: scaler
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-scaler-local-dev}
+    # No host port published by default — 5432 is a common collision with
+    # another local Postgres. `npm run db:backup`/`db:restore` and psql both
+    # work via `docker compose exec`, which doesn't need one. If you want a
+    # GUI client connected directly, add a docker-compose.override.yml with
+    # `ports: ["<free-port>:5432"]` under this service.
+    volumes:
+      - scaler-postgres-data:/var/lib/postgresql/data
+      - ./deploy/db/001-schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U scaler -d scaler']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   scaler-ui:
     build: .
     ports:
@@ -8,3 +37,55 @@ services:
       AWS_CREDENTIAL_MODE: node
     extra_hosts:
       - 'host.docker.internal:host-gateway'
+
+  # The real internal event API (server.mjs) — persists operations, classifies
+  # critical scaling issues, and sends Slack alerts. Unlike scaler-ui, this
+  # one is real: see README "Report a completed operation" for a curl example.
+  events:
+    build: .
+    command: ['node', 'controller/server.mjs']
+    ports:
+      - '3001:3001'
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: '5432'
+      DATABASE_NAME: scaler
+      DATABASE_USER: scaler
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:-scaler-local-dev}
+      SCALER_EVENTS_TOKEN: ${SCALER_EVENTS_TOKEN:-local-dev-token}
+      NODE_ENV: development
+      EVENTS_ALLOWED_ORIGIN: http://localhost:3000
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # The real control loop (reconciler.mjs). Opt-in: needs a Kubernetes API
+  # (kubectl proxy on the host, see below) and AWS credentials to do anything
+  # useful, so it does not start with a plain `docker compose up`. Start it
+  # explicitly with `docker compose --profile reconciler up`.
+  reconciler:
+    build: .
+    command: ['node', 'controller/reconciler.mjs']
+    profiles: ['reconciler']
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: '5432'
+      DATABASE_NAME: scaler
+      DATABASE_USER: scaler
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:-scaler-local-dev}
+      SCALER_EVENTS_TOKEN: ${SCALER_EVENTS_TOKEN:-local-dev-token}
+      EVENTS_API_URL: http://events:3001
+      CLUSTER_NAME: local-dev
+      KUBE_PROXY_URL: http://host.docker.internal:8001
+      AWS_CREDENTIAL_MODE: node
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      events:
+        condition: service_started
+
+volumes:
+  scaler-postgres-data:

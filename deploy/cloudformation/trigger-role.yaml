@@ -1,0 +1,146 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Scaler trigger-reader IAM role: an IRSA role trusted by exactly one
+  Kubernetes service account (tight trust entity — no wildcarded namespace
+  or service account), granted only the read permissions the AWS-backed
+  triggers actually configured need (minimum permissions — SQS access is
+  scoped to specific queue ARNs; nothing is granted for a source type that
+  isn't enabled). See README.md "Create a least-privilege trigger role" and
+  the Guided-tab Connections panel in the app, which drives this template.
+
+Parameters:
+  ClusterOIDCProviderArn:
+    Type: String
+    Description: >-
+      The EKS cluster's IAM OIDC provider ARN, e.g.
+      arn:aws:iam::123456789012:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE.
+      Find it with: aws eks describe-cluster --name <cluster> --query
+      "cluster.identity.oidc.issuer" --output text, then look up the matching
+      provider under IAM > Identity providers (or `aws iam
+      list-open-id-connect-providers`) if it isn't already registered.
+    AllowedPattern: '^arn:aws:iam::[0-9]{12}:oidc-provider/.+$'
+
+  OIDCProviderURL:
+    Type: String
+    Description: >-
+      The same provider, without the "https://" prefix, e.g.
+      oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE. Used to scope the trust
+      condition to one namespace/service account.
+
+  Namespace:
+    Type: String
+    Default: scaler
+    Description: Kubernetes namespace the Scaler service account lives in.
+
+  ServiceAccountName:
+    Type: String
+    Default: scaler
+    Description: Kubernetes service account name Scaler runs as.
+
+  RoleName:
+    Type: String
+    Default: scaler-trigger-reader
+    Description: Name for the created IAM role.
+
+  QueueArns:
+    Type: CommaDelimitedList
+    Default: ''
+    Description: >-
+      SQS queue ARNs used by aws-sqs trigger definitions, comma-separated.
+      Leave empty if no aws-sqs trigger is configured yet — re-run this
+      stack (update, not a new one) with the list once one is added, rather
+      than granting access to queues nothing reads yet.
+
+  EnableCloudWatchRead:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      Set to true only if an aws-cloudwatch-metric or aws-cloudwatch-alarm
+      trigger is configured. Grants cloudwatch:GetMetricData and
+      cloudwatch:DescribeAlarms — AWS does not support scoping either action
+      to specific resources, so this is necessarily account/region-wide
+      within this role; it is still never granted unless a CloudWatch
+      trigger actually needs it.
+
+Conditions:
+  HasQueueArns:
+    Fn::Not:
+      - Fn::Equals:
+          - Fn::Join: [',', !Ref QueueArns]
+          - ''
+  UseCloudWatch:
+    Fn::Equals: [!Ref EnableCloudWatchRead, 'true']
+
+Resources:
+  TriggerReaderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref RoleName
+      Description: >-
+        Assumed only by the Scaler service account named above, via IRSA.
+        Read-only: it cannot change SQS, CloudWatch, or anything else.
+      MaxSessionDuration: 3600
+      # IAM condition keys here must be named after the OIDC provider URL
+      # itself (e.g. "oidc.eks.<region>.amazonaws.com/id/EXAMPLE:sub"), which
+      # can't be expressed as a normal YAML mapping key computed from a
+      # parameter. The standard workaround — used throughout AWS's own IRSA
+      # examples — is to template the entire trust policy as one JSON string
+      # via Fn::Sub; AWS::IAM::Role's AssumeRolePolicyDocument accepts a
+      # pre-built JSON string exactly as readily as a structured YAML object.
+      AssumeRolePolicyDocument:
+        Fn::Sub: |
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Principal": {
+                  "Federated": "${ClusterOIDCProviderArn}"
+                },
+                "Action": "sts:AssumeRoleWithWebIdentity",
+                "Condition": {
+                  "StringEquals": {
+                    "${OIDCProviderURL}:aud": "sts.amazonaws.com",
+                    "${OIDCProviderURL}:sub": "system:serviceaccount:${Namespace}:${ServiceAccountName}"
+                  }
+                }
+              }
+            ]
+          }
+      Policies:
+        - Fn::If:
+            - HasQueueArns
+            - PolicyName: ScalerReadSqsQueueDepth
+              PolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                  - Sid: ScalerReadSqsQueueDepth
+                    Effect: Allow
+                    Action: sqs:GetQueueAttributes
+                    Resource: !Ref QueueArns
+            - !Ref AWS::NoValue
+        - Fn::If:
+            - UseCloudWatch
+            - PolicyName: ScalerReadCloudWatchMetricsAndAlarms
+              PolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                  - Sid: ScalerReadCloudWatchMetricsAndAlarms
+                    Effect: Allow
+                    Action:
+                      - cloudwatch:GetMetricData
+                      - cloudwatch:DescribeAlarms
+                    Resource: '*'
+            - !Ref AWS::NoValue
+      Tags:
+        - Key: app.kubernetes.io/part-of
+          Value: scaler
+
+Outputs:
+  RoleArn:
+    Description: Paste this into the app's Connections panel (or the ServiceAccount annotation).
+    Value: !GetAtt TriggerReaderRole.Arn
+  ServiceAccountAnnotation:
+    Description: The Kubernetes ServiceAccount annotation this role expects.
+    Value: !Sub 'eks.amazonaws.com/role-arn: ${TriggerReaderRole.Arn}'

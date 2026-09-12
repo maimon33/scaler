@@ -8,3 +8,31 @@ secrets:
   eventsToken: ""
   # Optional incoming Slack webhook. Critical logs remain enabled when empty.
   slackWebhookUrl: ""
+
+# In-cluster Postgres (Deployment + PVC + Service + schema init + the
+# NetworkPolicy restricting access to it). Enabled by default so
+# `helm upgrade --install` is a complete, self-contained control plane.
+postgres:
+  enabled: true
+
+# Connection details every Scaler container uses. Leave `host` empty to use
+# the bundled in-cluster Postgres above (its Service is named
+# "scaler-postgres"); set it to point at Amazon RDS (or any other Postgres)
+# instead, and set `postgres.enabled: false` to skip deploying the bundled
+# database entirely. `secrets.databasePassword` is still required either way
+# — it's the password for this `user`/`name` on whichever Postgres you use.
+#
+#   postgres:
+#     enabled: false
+#   database:
+#     host: scaler.abc123xyz.us-east-1.rds.amazonaws.com
+#
+# See the README's "Using Amazon RDS instead of in-cluster Postgres" section
+# for the full walkthrough, including security-group/VPC reachability and
+# why RDS automated backups replace the local db-backup.sh/db-restore.sh
+# scripts once you're pointed at RDS.
+database:
+  host: ""
+  port: "5432"
+  name: "scaler"
+  user: "scaler"
