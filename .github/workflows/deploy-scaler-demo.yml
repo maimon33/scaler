@@ -6,6 +6,8 @@ on:
       - main
     paths:
       - 'scaler-demo/**'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
       - '.github/workflows/deploy-scaler-demo.yml'
   workflow_dispatch:
 
