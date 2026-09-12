@@ -1,7 +1,25 @@
+import { Dashboard } from './components/Dashboard'
+import { Footer } from './components/Footer'
+import { Nav } from './components/Nav'
+import { useMetricsSimulation } from './hooks/useMetricsSimulation'
+import { ScalerProvider } from './hooks/useScalerStore'
+
+function Demo() {
+  useMetricsSimulation()
+
+  return (
+    <>
+      <Nav />
+      <Dashboard />
+      <Footer />
+    </>
+  )
+}
+
 export default function App() {
   return (
-    <div className="flex items-center justify-center min-h-screen">
-      <h1 className="text-4xl font-headline text-primary">Scaler Demo</h1>
-    </div>
+    <ScalerProvider>
+      <Demo />
+    </ScalerProvider>
   )
 }

@@ -1,6 +1,30 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+@plugin "@tailwindcss/forms";
+
+@theme {
+  --color-background: #101512;
+  --color-surface: #101512;
+  --color-surface-container-lowest: #090d0b;
+  --color-surface-container-low: #171e1a;
+  --color-surface-container: #1d2822;
+  --color-surface-container-high: #26352d;
+  --color-surface-bright: #33483c;
+  --color-primary: #b9f7d1;
+  --color-primary-container: #3f8b65;
+  --color-primary-fixed: #d5ffe4;
+  --color-on-primary-fixed: #062016;
+  --color-secondary: #71e7a4;
+  --color-secondary-fixed: #9fffc4;
+  --color-tertiary: #f1c968;
+  --color-tertiary-fixed: #ffe5a2;
+  --color-on-surface: #eef2ed;
+  --color-on-surface-variant: #c1cac3;
+  --color-outline: #89958d;
+  --color-outline-variant: #3c4941;
+  --font-headline: "Space Grotesk", sans-serif;
+  --font-body: "Manrope", sans-serif;
+  --font-label: "Space Grotesk", sans-serif;
+}
 
 @layer base {
   body {

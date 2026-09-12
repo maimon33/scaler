@@ -4,6 +4,7 @@ import { INITIAL_WORKLOADS } from '../data/workloads'
 
 type Action =
   | { type: 'SET_WORKLOAD_REPLICAS'; workloadId: string; desiredReplicas: number }
+  | { type: 'COMPLETE_WORKLOAD_SCALING'; workloadId: string; replicas: number }
   | { type: 'ADD_SCALING_ACTION'; action: ScalingAction }
   | { type: 'SET_CURRENT_SCENARIO'; scenarioId: string }
   | { type: 'SET_SELECTED_WORKLOAD'; workloadId: string | null }
@@ -44,6 +45,21 @@ function scaleReducer(state: ScalerStore, action: Action): ScalerStore {
       return {
         ...state,
         scalingActions: [action.action, ...state.scalingActions].slice(0, 50)
+      }
+    }
+    case 'COMPLETE_WORKLOAD_SCALING': {
+      return {
+        ...state,
+        workloads: state.workloads.map(w =>
+          w.id === action.workloadId
+            ? {
+                ...w,
+                currentReplicas: action.replicas,
+                desiredReplicas: action.replicas,
+                status: 'Running'
+              }
+            : w
+        )
       }
     }
     case 'SET_CURRENT_SCENARIO': {
@@ -103,7 +119,12 @@ export function useScalerStore() {
       const workload = store.workloads.find(w => w.id === workloadId)
       if (!workload) return
 
-      dispatch({ type: 'SET_WORKLOAD_REPLICAS', workloadId, desiredReplicas })
+      const validatedReplicas = Math.max(
+        workload.minReplicas,
+        Math.min(workload.maxReplicas, desiredReplicas)
+      )
+
+      dispatch({ type: 'SET_WORKLOAD_REPLICAS', workloadId, desiredReplicas: validatedReplicas })
 
       dispatch({
         type: 'ADD_SCALING_ACTION',
@@ -112,10 +133,18 @@ export function useScalerStore() {
           workloadId,
           timestamp: new Date(),
           fromReplicas: workload.currentReplicas,
-          toReplicas: desiredReplicas,
+          toReplicas: validatedReplicas,
           trigger: 'manual'
         }
       })
+
+      window.setTimeout(() => {
+        dispatch({
+          type: 'COMPLETE_WORKLOAD_SCALING',
+          workloadId,
+          replicas: validatedReplicas
+        })
+      }, 1200)
     },
     recordScalingAction: (action: ScalingAction) => {
       dispatch({ type: 'ADD_SCALING_ACTION', action })

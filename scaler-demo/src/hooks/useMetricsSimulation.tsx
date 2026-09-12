@@ -16,7 +16,12 @@ export function useMetricsSimulation() {
   useEffect(() => {
     const interval = setInterval(() => {
       store.workloads.forEach(workload => {
-        const generatorKey = `${workload.id}-${workload.primaryMetric === 'sqs' ? 'sqs' : workload.primaryMetric === 'requests' ? 'rps' : 'cpu'}`
+        const metricKey = workload.primaryMetric === 'requests'
+          ? 'rps'
+          : workload.primaryMetric === 'schedule'
+            ? 'active'
+            : workload.primaryMetric
+        const generatorKey = `${workload.id}-${metricKey}`
         const generator = generatorsRef.current[generatorKey]
 
         if (generator) {
