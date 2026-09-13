@@ -68,18 +68,22 @@ jobs:
           audience: sts.amazonaws.com
 
       - name: Upload static assets
+        # assetPrefix (see next.config.ts) puts hashed assets under a
+        # dist/client/scaler/_next/ subfolder, not dist/client/_next/ --
+        # required so their URLs resolve correctly once served from /scaler/.
         run: |
-          aws s3 sync dist/client/_next "s3://${S3_BUCKET}/${S3_PREFIX}/_next/" \
+          aws s3 sync dist/client/scaler/_next "s3://${S3_BUCKET}/${S3_PREFIX}/_next/" \
             --delete \
             --cache-control 'public,max-age=31536000,immutable' \
             --only-show-errors
 
       - name: Upload other static files
         run: |
-          aws s3 sync dist/client "s3://${S3_BUCKET}/${S3_PREFIX}/" \
-            --delete \
-            --exclude index.html \
-            --exclude '_next/*' \
+          aws s3 cp dist/client/favicon.svg "s3://${S3_BUCKET}/${S3_PREFIX}/favicon.svg" \
+            --cache-control 'public,max-age=3600' \
+            --only-show-errors
+          aws s3 cp dist/client/404.html "s3://${S3_BUCKET}/${S3_PREFIX}/404.html" \
+            --content-type 'text/html; charset=utf-8' \
             --cache-control 'public,max-age=3600' \
             --only-show-errors
 
