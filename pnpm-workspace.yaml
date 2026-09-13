@@ -1,7 +1,0 @@
-packages:
-  - scaler-demo
-
-allowBuilds:
-  esbuild: true
-  sharp: true
-  workerd: true

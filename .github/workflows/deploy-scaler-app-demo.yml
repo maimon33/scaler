@@ -1,18 +1,33 @@
 name: Deploy Scaler demo to maimons.dev
 
+# Publishes the real Scaler app's dashboard as a static site — no backend of
+# any kind is reachable from this build. The dashboard runs entirely on mock
+# data (see app/page.tsx and lib/demo-data.ts); the "Create a trigger-reader
+# role" panel only ever produces copy-pasteable commands, never a live call.
+# The controller/, deploy/, and scripts/ directories (the real events API,
+# reconciler, Helm chart, and CloudFormation role template — everything used
+# for an actual self-hosted deployment) are not part of this build at all.
 on:
   push:
     branches:
       - main
     paths:
-      - 'scaler-demo/**'
-      - 'pnpm-lock.yaml'
-      - 'pnpm-workspace.yaml'
-      - '.github/workflows/deploy-scaler-demo.yml'
+      - 'app/**'
+      - 'components/**'
+      - 'lib/**'
+      - 'hooks/**'
+      - 'public/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'next.config.ts'
+      - 'vite.config.ts'
+      - 'tsconfig.json'
+      - '.openai/**'
+      - '.github/workflows/deploy-scaler-app-demo.yml'
   workflow_dispatch:
 
 concurrency:
-  group: deploy-scaler-demo
+  group: deploy-scaler-app-demo
   cancel-in-progress: true
 
 permissions:
@@ -36,18 +51,14 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: 24
-
-      - name: Enable pnpm
-        run: |
-          corepack enable
-          corepack prepare pnpm@12.3.4 --activate
+          node-version: 22
+          cache: npm
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile --filter scaler-demo...
+        run: npm ci
 
-      - name: Build demo
-        run: pnpm --filter scaler-demo build
+      - name: Build static demo
+        run: npm run build:static-demo
 
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v6
@@ -56,25 +67,25 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
 
-      - name: Upload versioned assets
+      - name: Upload static assets
         run: |
-          aws s3 sync scaler-demo/dist/assets "s3://${S3_BUCKET}/${S3_PREFIX}/assets/" \
+          aws s3 sync dist/client/_next "s3://${S3_BUCKET}/${S3_PREFIX}/_next/" \
             --delete \
             --cache-control 'public,max-age=31536000,immutable' \
             --only-show-errors
 
-      - name: Upload static files
+      - name: Upload other static files
         run: |
-          aws s3 sync scaler-demo/dist "s3://${S3_BUCKET}/${S3_PREFIX}/" \
+          aws s3 sync dist/client "s3://${S3_BUCKET}/${S3_PREFIX}/" \
             --delete \
             --exclude index.html \
-            --exclude 'assets/*' \
+            --exclude '_next/*' \
             --cache-control 'public,max-age=3600' \
             --only-show-errors
 
       - name: Upload HTML entry point
         run: |
-          aws s3 cp scaler-demo/dist/index.html "s3://${S3_BUCKET}/${S3_PREFIX}/index.html" \
+          aws s3 cp dist/client/index.html "s3://${S3_BUCKET}/${S3_PREFIX}/index.html" \
             --content-type 'text/html; charset=utf-8' \
             --cache-control 'no-cache,max-age=0,must-revalidate' \
             --only-show-errors
