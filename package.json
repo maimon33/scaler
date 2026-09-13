@@ -13,6 +13,7 @@
     "db:backup": "scripts/db-backup.sh",
     "db:restore": "scripts/db-restore.sh",
     "build": "vinext build",
+    "build:static-demo": "SCALER_STATIC_EXPORT=true vinext build",
     "start": "wrangler dev --config dist/server/wrangler.json",
     "lint": "oxlint",
     "format": "oxfmt"
